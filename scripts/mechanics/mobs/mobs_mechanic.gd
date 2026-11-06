@@ -23,6 +23,8 @@ const PLAYER_REACH := 4.2
 const REACH_SLACK := 1.0
 ## Сервер не верит клиенту на слово и не даёт бить чаще этого.
 const ATTACK_COOLDOWN := 0.35
+## После наезда моб не попадает под ту же машину, пока не отлетит.
+const RAM_COOLDOWN := 0.6
 ## Дальше этого кабан не уходит от своего места, пока спокоен.
 const HOME_RADIUS := 7.0
 const FIELD_MARGIN := 3.0
@@ -55,6 +57,7 @@ const SPECS := {
 var _nodes: Dictionary = {}
 var _states: Dictionary = {}
 var _last_attack: Dictionary = {}
+var _ram_left: Dictionary = {}
 var _mobs_root: Node3D
 var _sync_left := 0.0
 
@@ -105,6 +108,9 @@ func _fresh_state(mob_id: int, mob_type: String, spot: Vector3) -> Dictionary:
 		"attached_to": 0,
 		"attack_left": 0.0,
 		"web_left": float(spec.get("web_interval", 0.0)),
+		"knock_left": 0.0,
+		"knock_dir": Vector3.ZERO,
+		"knock_speed": 0.0,
 	}
 
 ## Снимок состояния: его смотрят тесты и панель отладки.
@@ -128,6 +134,7 @@ func _process(delta: float) -> void:
 		return
 	for key in _states.keys():
 		_update_mob(int(key), delta)
+	_ram_check(delta)
 	if Net.is_offline():
 		return
 	_sync_left -= delta
@@ -150,6 +157,12 @@ func _update_mob(mob_id: int, delta: float) -> void:
 		return
 
 	var spec := _spec(String(state["type"]))
+	if float(state["knock_left"]) > 0.0:
+		# Отброшенный моб летит по инерции и не соображает, пока не встанет.
+		_update_knock(state, delta)
+		_place(state)
+		return
+
 	var target := _nearest_player(Vector3(state["position"]), float(spec["activate"]))
 	state["target"] = target
 	match String(state["type"]):
@@ -160,6 +173,17 @@ func _update_mob(mob_id: int, delta: float) -> void:
 		"spider":
 			_update_spider(state, spec, target, delta)
 	_place(state)
+
+func _update_knock(state: Dictionary, delta: float) -> void:
+	state["knock_left"] = float(state["knock_left"]) - delta
+	var direction: Vector3 = state["knock_dir"]
+	var speed := float(state["knock_speed"])
+	state["position"] = Vector3(state["position"]) + direction * speed * delta
+	state["knock_speed"] = maxf(0.0, speed - RamRules.KNOCK_DECAY * delta)
+	state["yaw"] = _yaw_of(direction)
+	if float(state["knock_left"]) <= 0.0:
+		state["knock_left"] = 0.0
+		state["knock_speed"] = 0.0
 
 ## Кабан ходит кругами у дома. Бежит он только от обидчика, после удара.
 func _update_boar(state: Dictionary, spec: Dictionary, delta: float) -> void:
@@ -305,7 +329,10 @@ func _attack_on_server(peer_id: int, mob_id: int) -> void:
 	var stats := _stats()
 	if stats != null:
 		strength = float(stats.effective_attributes(peer_id)["strength"])
-	var dealt := DerivedStats.damage_through_body(strength, float(spec["body"]))
+	# Оружие в руке усиливает удар, инструмент бьёт как кулак. Сама формула
+	# урона не меняется: сила проходит через тело моба.
+	var weapon := ItemDB.attack_multiplier(Game.get_equipped(peer_id))
+	var dealt := DerivedStats.damage_through_body(strength * weapon, float(spec["body"]))
 	state["hp"] = maxf(0.0, float(state["hp"]) - dealt)
 	print("[MOBS] #%d ударил %s #%d на %.1f, осталось %.1f" % [
 		peer_id, String(NAMES.get(String(state["type"]), "моб")), mob_id, dealt, float(state["hp"])
@@ -339,7 +366,8 @@ func _kill(state: Dictionary, hunter: int) -> void:
 	var node = _nodes.get(mob_id, null)
 	if node != null:
 		node.visible = false
-	Game.notify_peer(hunter, "%s сбит" % String(NAMES.get(String(state["type"]), "Моб")))
+	if hunter != 0:
+		Game.notify_peer(hunter, "%s сбит" % String(NAMES.get(String(state["type"]), "Моб")))
 	print("[MOBS] %s #%d сбит игроком #%d" % [String(state["type"]), mob_id, hunter])
 
 func _respawn(state: Dictionary) -> void:
@@ -353,6 +381,62 @@ func _respawn(state: Dictionary) -> void:
 	if node != null:
 		node.visible = true
 		node.position = home
+
+# --- наезд машины ----------------------------------------------------------
+
+## Машину ведёт клиент, поэтому скорость сервер считает сам по присланным
+## положениям. На слово клиенту про удар не верим.
+func _ram_check(delta: float) -> void:
+	for key in _ram_left.keys():
+		_ram_left[key] = maxf(0.0, float(_ram_left[key]) - delta)
+	for vehicle_id in Game.vehicles:
+		var vehicle: Dictionary = Game.vehicles[vehicle_id]
+		var driver := int(vehicle.get("driver", 0))
+		if driver == 0:
+			continue
+		var speed := float(vehicle.get("speed", 0.0))
+		if not RamRules.can_hit(speed):
+			continue
+		var car_spot: Vector3 = vehicle.get("position", Vector3.ZERO)
+		for mob_key in _states:
+			var mob_id := int(mob_key)
+			if float(_ram_left.get(mob_id, 0.0)) > 0.0:
+				continue
+			var state: Dictionary = _states[mob_id]
+			if not bool(state["alive"]):
+				continue
+			if _flat_distance(car_spot, Vector3(state["position"])) > RamRules.HIT_RADIUS:
+				continue
+			_ram_mob(state, speed, car_spot, driver)
+
+func _ram_mob(state: Dictionary, speed: float, car_spot: Vector3, driver: int) -> void:
+	var mob_id := int(state["id"])
+	var spec := _spec(String(state["type"]))
+	var dealt := RamRules.damage(speed, float(spec["body"]))
+	state["hp"] = maxf(0.0, float(state["hp"]) - dealt)
+	_ram_left[mob_id] = RAM_COOLDOWN
+
+	# Слайм на лице мешает водителю: наезд сбивает его с игрока.
+	if String(state["mode"]) == "attached":
+		_detach(state, spec)
+
+	var away := _flat_direction(car_spot, Vector3(state["position"]))
+	state["knock_dir"] = away
+	state["knock_left"] = RamRules.KNOCK_TIME
+	state["knock_speed"] = RamRules.knock_speed(speed)
+	if String(state["type"]) == "boar":
+		state["mode"] = "flee"
+		state["timer"] = float(_spec("boar")["flee_time"])
+		state["flee_dir"] = away
+
+	var mob_name := String(NAMES.get(String(state["type"]), "моб"))
+	print("[MOBS] машина #%d сбила %s #%d на %.0f км/ч, урон %.1f, осталось %.1f" % [
+		driver, mob_name, mob_id, speed * 3.6, dealt, float(state["hp"])
+	])
+	if float(state["hp"]) <= 0.0:
+		_kill(state, driver)
+		return
+	Game.notify_peer(driver, "Сбил: %s" % mob_name)
 
 # --- игроки и урон ---------------------------------------------------------
 

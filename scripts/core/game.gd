@@ -62,6 +62,8 @@ func setup_world(resource_list: Array, vehicle_list: Array = []) -> void:
 			"driver": 0,
 			"position": entry.get("position", Vector3.ZERO),
 			"rotation": float(entry.get("rot_y", 0.0)),
+			"speed": 0.0,
+			"speed_time": 0.0,
 		}
 	resources.clear()
 	for entry in resource_list:
@@ -242,16 +244,27 @@ func _harvest_on_server(peer_id: int, resource_id: int) -> void:
 		peer_id, String(outcome.get("item", "")), resource_id
 	])
 	_sync_resource.rpc(resource_id, new_state)
-	_give_item(peer_id, String(outcome.get("item", "")), int(outcome.get("count", 1)))
+	give_item(peer_id, String(outcome.get("item", "")), int(outcome.get("count", 1)))
 
-func _give_item(peer_id: int, item_id: String, amount: int) -> void:
+## Выдать предмет в сумку. Возвращает false, если места нет: крафту это
+## нужно, чтобы вернуть материалы, а не потерять их.
+func give_item(peer_id: int, item_id: String, amount: int) -> bool:
 	if item_id.is_empty() or amount <= 0:
-		return
+		return false
 	var inv: Inventory = inventories.get(peer_id, null)
 	if inv == null:
-		return
+		return false
 	if not inv.add(item_id, amount):
 		_send_notice(peer_id, "Сумка полна: %s" % ItemDB.display_name(item_id))
+		return false
+	_sync_inventory.rpc(peer_id, inv.to_dict())
+	return true
+
+## Разослать сумку игрока всем. Нужно механикам, которые меняют сумку сами:
+## крафт списывает материалы и кладёт готовый предмет.
+func push_inventory(peer_id: int) -> void:
+	var inv: Inventory = inventories.get(peer_id, null)
+	if inv == null:
 		return
 	_sync_inventory.rpc(peer_id, inv.to_dict())
 
@@ -270,7 +283,7 @@ func _request_equip(item_id: String) -> void:
 	_equip_on_server(multiplayer.get_remote_sender_id(), item_id)
 
 func _equip_on_server(peer_id: int, item_id: String) -> void:
-	if not ItemDB.is_tool_item(item_id):
+	if not ItemDB.is_equippable(item_id):
 		return
 	var inv: Inventory = inventories.get(peer_id, null)
 	if inv == null or not inv.has(item_id):
@@ -339,20 +352,44 @@ func _vehicle_exit_on_server(peer_id: int) -> void:
 		return
 
 ## Водитель прислал положение. Сервер запоминает его для проверки дистанции,
-## клиенты двигают узел. Слушаем только назначенного водителя.
+## а все считают по нему скорость: по ней мобы получают урон от наезда.
+## Слушаем только назначенного водителя.
 func note_vehicle_transform(vehicle_id: int, peer_id: int, position: Vector3, rotation_y: float) -> void:
 	var state: Dictionary = vehicles.get(vehicle_id, {})
 	if state.is_empty():
 		return
 	if int(state.get("driver", 0)) != peer_id:
 		return
+	var previous: Vector3 = state.get("position", position)
 	state["position"] = position
 	state["rotation"] = rotation_y
+	state["speed"] = _measure_speed(state, previous, position)
 	vehicles[vehicle_id] = state
+
+## Скорость по двум соседним положениям. Сглаживаем, потому что пакеты
+## приходят неровно и без сглаживания удар дёргался бы.
+func _measure_speed(state: Dictionary, previous: Vector3, position: Vector3) -> float:
+	var now := now_seconds()
+	var last_time := float(state.get("speed_time", now))
+	var elapsed := maxf(0.02, now - last_time)
+	var flat := Vector2(position.x - previous.x, position.z - previous.z).length()
+	var instant := flat / elapsed
+	var old_speed := float(state.get("speed", 0.0))
+	state["speed_time"] = now
+	return lerpf(old_speed, instant, 0.5)
 
 @rpc("authority", "call_local", "reliable")
 func _sync_vehicle(vehicle_id: int, driver: int, position: Vector3, rotation_y: float) -> void:
-	vehicles[vehicle_id] = {"driver": driver, "position": position, "rotation": rotation_y}
+	# Скорость и время замера переносим: иначе смена водителя обнуляла бы
+	# счётчик наездов на ровном месте.
+	var previous: Dictionary = vehicles.get(vehicle_id, {})
+	vehicles[vehicle_id] = {
+		"driver": driver,
+		"position": position,
+		"rotation": rotation_y,
+		"speed": float(previous.get("speed", 0.0)),
+		"speed_time": float(previous.get("speed_time", 0.0)),
+	}
 	vehicles_changed.emit()
 
 # --- синхронизация ---------------------------------------------------------

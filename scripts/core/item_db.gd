@@ -19,6 +19,14 @@ const ITEMS := {
 		"max_stack": 1,
 		"color": Color(0.66, 0.68, 0.72),
 	},
+	"spear": {
+		"name": "Копьё",
+		"kind": "weapon",
+		"tool": "",
+		"attack": 1.6,
+		"max_stack": 1,
+		"color": Color(0.80, 0.66, 0.32),
+	},
 	"wood": {
 		"name": "Дерево",
 		"kind": "material",
@@ -49,7 +57,7 @@ const START_INVENTORY := {
 }
 
 ## Предметы, которые показываются в панели быстрого доступа, по порядку слотов.
-const HOTBAR := ["axe", "pickaxe"]
+const HOTBAR := ["axe", "pickaxe", "spear"]
 
 static func exists(item_id: String) -> bool:
 	return ITEMS.has(item_id)
@@ -66,6 +74,16 @@ static func kind(item_id: String) -> String:
 ## Имя не is_tool: так называется встроенный метод Script, он перебивает статику.
 static func is_tool_item(item_id: String) -> bool:
 	return kind(item_id) == "tool"
+
+## В руку берут инструменты и оружие, остальное лежит в сумке.
+static func is_equippable(item_id: String) -> bool:
+	var item_kind := kind(item_id)
+	return item_kind == "tool" or item_kind == "weapon"
+
+## Во сколько раз предмет в руке усиливает удар. У инструментов и пустых рук
+## множитель единица, у копья выше.
+static func attack_multiplier(item_id: String) -> float:
+	return float(info(item_id).get("attack", 1.0))
 
 ## Тег инструмента нужен правилам добычи: топор рубит дерево, кирка бьёт камень.
 ## Для не-инструментов возвращает пустую строку.

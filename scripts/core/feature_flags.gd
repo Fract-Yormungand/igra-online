@@ -11,6 +11,7 @@ const DEFAULTS := {
 	"vehicles": true,
 	"day_night": true,
 	"stats": true,
+	"crafting": true,
 	"mobs": true,
 }
 

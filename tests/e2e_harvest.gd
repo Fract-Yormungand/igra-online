@@ -5,7 +5,7 @@ extends Node
 ## инструментом добыча не проходит и что состояние источника синхронизируется.
 ## Запускается флагом --e2e <адрес> [порт].
 
-const TIMEOUT := 30.0
+const TIMEOUT := 45.0
 
 var _elapsed := 0.0
 var _wait := 0.0
@@ -20,6 +20,7 @@ var _mp_before := 0.0
 var _mp_after := 0.0
 var _boar_id := -1
 var _boar_start := Vector3.ZERO
+var _stone_id := -1
 
 func _ready() -> void:
 	print("[E2E] старт")
@@ -143,6 +144,8 @@ func _process(delta: float) -> void:
 			var moved: Dictionary = Game.vehicles.get(_car_id, {})
 			var travelled := Vector3(moved.get("position", Vector3.ZERO)).distance_to(_car_start)
 			_check(travelled > 2.0, "машина проехала %.1f м" % travelled)
+			var car_speed := float(moved.get("speed", 0.0))
+			_check(car_speed > 1.0, "скорость машины посчитана: %.1f м/с" % car_speed)
 			Game.request_vehicle_exit()
 			_phase = 14
 			_wait = 0.6
@@ -173,6 +176,40 @@ func _process(delta: float) -> void:
 			_wait = 1.2
 		19:
 			_mobs_check()
+			_phase = 20
+			_wait = 0.2
+		20:
+			_craft_setup()
+			_phase = 21
+			_wait = 0.6
+		21:
+			Game.request_equip("pickaxe")
+			_phase = 22
+			_wait = 0.6
+		22:
+			Game.request_harvest(_stone_id)
+			_phase = 23
+			_wait = 0.8
+		23:
+			Game.request_harvest(_stone_id)
+			_phase = 24
+			_wait = 0.8
+		24:
+			_craft_request()
+			_phase = 25
+			_wait = 0.3
+		25:
+			_craft_progress()
+			_phase = 26
+			_wait = 5.6
+		26:
+			_craft_result()
+			_phase = 27
+			_wait = 0.5
+		27:
+			_check(Game.get_equipped(Net.my_id) == "spear", "копьё взято в руки: %s" % Game.get_equipped(Net.my_id))
+			_check_inventory_ui()
+			_ram_test()
 			_finish()
 
 ## Характеристики приходят с сервера отдельным пакетом: клиент обязан получить
@@ -291,6 +328,98 @@ func _mobs_check() -> void:
 	var stats := _stats()
 	if stats != null:
 		_check(stats.hp(Net.my_id) > 0.0, "после удара и толчка игрок жив")
+
+## Крафт: телепорт к камню, две добычи киркой, заказ копья.
+func _craft_setup() -> void:
+	var stone := _first_resource("stone")
+	if stone.is_empty():
+		_fail("в мире нет камня для крафта")
+		return
+	_stone_id = int(stone["id"])
+	var player := _local_player()
+	if player == null:
+		_fail("не нашёл персонажа для крафта")
+		return
+	player.global_position = Vector3(stone["position"]) + Vector3(2.0, 0.3, 0.0)
+	print("[E2E] крафт: камень #%d, дерева в сумке %d" % [_stone_id, _inv().count("wood")])
+
+func _craft_request() -> void:
+	_check(_inv().count("stone") >= 2, "камня хватает на копьё: %d" % _inv().count("stone"))
+	var crafting := Features.mechanic("crafting")
+	_check(crafting != null, "механика крафта создалась")
+	if crafting == null:
+		return
+	print("[E2E] просим копьё: дерево %d, камень %d" % [_inv().count("wood"), _inv().count("stone")])
+	crafting.request_craft("spear")
+
+func _craft_progress() -> void:
+	var crafting := Features.mechanic("crafting")
+	if crafting == null:
+		return
+	var job: Dictionary = crafting.job(Net.my_id)
+	_check(not job.is_empty(), "крафт пошёл, в работе: %s" % String(job.get("recipe", "")))
+	_check(_inv().count("wood") == 0, "материалы списаны сразу, дерева %d" % _inv().count("wood"))
+
+func _craft_result() -> void:
+	var crafting := Features.mechanic("crafting")
+	if crafting != null:
+		_check(crafting.job(Net.my_id).is_empty(), "крафт закончился, очередь пуста")
+	_check(_inv().count("spear") == 1, "копьё в сумке: %d" % _inv().count("spear"))
+	var world := get_parent().get_node_or_null("World")
+	var hud: Node = world.hud if world != null else null
+	_check(hud != null and hud._craft_panel != null, "вкладка крафта собрана в окне сумки")
+	if crafting != null:
+		Game.request_equip("spear")
+
+## Наезд: машину двигает клиент, поэтому здесь подставляем её положение и
+## скорость вплотную к мобу и проверяем сам расчёт удара.
+func _ram_test() -> void:
+	var mobs := Features.mechanic("mobs")
+	if mobs == null:
+		_fail("наезд: нет механики мобов")
+		return
+	var target := _first_mob("boar")
+	if target.is_empty():
+		target = _first_mob("slime")
+	if target.is_empty():
+		_fail("наезд: не нашёл моба")
+		return
+	var mob_id := int(target["id"])
+	var before := float(mobs.snapshot()[mob_id].get("hp", 0.0))
+	var vehicle_id := _first_free_car()
+	if vehicle_id < 0:
+		vehicle_id = 0
+	Game.vehicles[vehicle_id] = {
+		"driver": Net.my_id,
+		"position": Vector3(target["position"]),
+		"rotation": 0.0,
+		"speed": 14.0,
+		"speed_time": 0.0,
+	}
+	mobs._ram_check(0.016)
+	var state: Dictionary = mobs.snapshot().get(mob_id, {})
+	var after := float(state.get("hp", 0.0))
+	_check(after < before, "машина сбила моба: было %.1f, стало %.1f" % [before, after])
+	_check(RamRules.damage(14.0, 6.0) > 0.0, "правило наезда даёт урон")
+
+## Сумка глазами интерфейса: сетка ячеек и вкладка крафта.
+func _check_inventory_ui() -> void:
+	var world := get_parent().get_node_or_null("World")
+	var hud: Node = world.hud if world != null else null
+	if hud == null:
+		_fail("нет HUD для проверки сумки")
+		return
+	hud._toggle_inventory()
+	_check(Game.ui_inventory_open, "Tab открывает сумку")
+	_check(hud._inv_grid.get_child_count() >= Inventory.MIN_SLOTS, "в сетке сумки ячеек: %d" % hud._inv_grid.get_child_count())
+	hud._show_tab(true)
+	_check(hud._craft_panel.visible, "вкладка крафта открывается")
+	_check(not hud._inv_view.visible, "сетка уступает место крафту")
+	_check(hud._craft_panel._list.get_child_count() == Recipes.ids().size(), "в крафте все рецепты: %d" % hud._craft_panel._list.get_child_count())
+	hud._show_tab(false)
+	_check(hud._inv_view.visible and not hud._craft_panel.visible, "возврат к предметам")
+	hud._toggle_inventory()
+	_check(not Game.ui_inventory_open, "Tab закрывает сумку")
 
 func _first_mob(kind: String) -> Dictionary:
 	var mobs := Features.mechanic("mobs")

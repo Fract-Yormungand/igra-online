@@ -7,6 +7,10 @@ signal changed
 
 var _items: Dictionary = {}
 
+## Сколько пустых ячеек дорисовывает окно сумки. Сетка без пустых мест
+## выглядит списком, а не сумкой.
+const MIN_SLOTS := 24
+
 func _init(initial: Dictionary = {}) -> void:
 	for item_id in initial:
 		add(String(item_id), int(initial[item_id]), false)
@@ -22,6 +26,23 @@ func is_empty() -> bool:
 
 func items() -> Dictionary:
 	return _items.duplicate()
+
+## Раскладка по ячейкам сетки. Сумка держит один стек на предмет, поэтому
+## ячейка это предмет и его количество. Пустые ячейки дорисовывает окно.
+func slots() -> Array:
+	var result: Array = []
+	var keys := _items.keys()
+	keys.sort()
+	for item_id in keys:
+		result.append({"item": String(item_id), "count": int(_items[item_id])})
+	return result
+
+## Сколько ещё влезет до полного стека. Крафт спрашивает это до того, как
+## списать материалы: иначе готовый предмет некуда положить.
+func free_space(item_id: String) -> int:
+	if not ItemDB.exists(item_id):
+		return 0
+	return maxi(0, ItemDB.max_stack(item_id) - count(item_id))
 
 ## Кладёт предмет. Возвращает false, если предмет неизвестен или стак полон.
 ## При частичном влечении кладёт сколько влезает и возвращает true.

@@ -5,6 +5,10 @@ extends CanvasLayer
 
 var _world: Node = null
 
+## Сетка сумки: пять ячеек в ряд, ячейка под один стак предмета.
+const GRID_COLUMNS := 5
+const GRID_CELL := Vector2(92.0, 62.0)
+
 var _root: Control
 var _status: Label
 var _zone: Label
@@ -13,7 +17,11 @@ var _hint: Label
 var _prompt: Label
 var _toast: Label
 var _inv_panel: PanelContainer
-var _inv_list: VBoxContainer
+var _inv_view: Control
+var _inv_grid: GridContainer
+var _craft_panel: Control
+var _tab_items: Button
+var _tab_craft: Button
 var _hotbar_slots: Dictionary = {}
 
 var _hp_bar: ProgressBar
@@ -96,7 +104,7 @@ func _build() -> void:
 	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center_box.add_child(_clock)
 
-	_hint = _make_label("Tab — сумка    C — статус    E — добыча    ЛКМ — удар    Shift — бег    Alt — шаг    1/2 — инструмент    Esc — меню", 14, Color(0.86, 0.90, 0.94))
+	_hint = _make_label("Tab — сумка и крафт    C — статус    E — добыча    ЛКМ — удар    Shift — бег    Alt — шаг    1/2/3 — топор, кирка, копьё    Esc — меню", 14, Color(0.86, 0.90, 0.94))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(_hint)
@@ -163,10 +171,10 @@ func _build_stats() -> void:
 func _build_inventory() -> void:
 	_inv_panel = PanelContainer.new()
 	_inv_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	_inv_panel.offset_left = -210.0
-	_inv_panel.offset_top = -160.0
-	_inv_panel.offset_right = 210.0
-	_inv_panel.offset_bottom = 160.0
+	_inv_panel.offset_left = -280.0
+	_inv_panel.offset_top = -225.0
+	_inv_panel.offset_right = 280.0
+	_inv_panel.offset_bottom = 225.0
 	_inv_panel.visible = false
 	_inv_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	# Своя подложка: тема по умолчанию просвечивает и текст теряется на фоне мира.
@@ -190,17 +198,131 @@ func _build_inventory() -> void:
 	var title := _make_label("Сумка", 22, Color(1, 1, 1))
 	column.add_child(title)
 
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	column.add_child(scroll)
+	var tabs := HBoxContainer.new()
+	tabs.add_theme_constant_override("separation", 8)
+	column.add_child(tabs)
 
-	_inv_list = VBoxContainer.new()
-	_inv_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_inv_list.add_theme_constant_override("separation", 6)
-	scroll.add_child(_inv_list)
+	_tab_items = _tab_button("Предметы")
+	_tab_items.button_pressed = true
+	_tab_items.pressed.connect(_show_tab.bind(false))
+	tabs.add_child(_tab_items)
+
+	_tab_craft = _tab_button("Крафт")
+	_tab_craft.visible = false
+	_tab_craft.pressed.connect(_show_tab.bind(true))
+	tabs.add_child(_tab_craft)
+
+	_inv_view = ScrollContainer.new()
+	_inv_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_inv_view.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	column.add_child(_inv_view)
+
+	_inv_grid = GridContainer.new()
+	_inv_grid.columns = GRID_COLUMNS
+	_inv_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_inv_grid.add_theme_constant_override("h_separation", 6)
+	_inv_grid.add_theme_constant_override("v_separation", 6)
+	_inv_view.add_child(_inv_grid)
+
+	# Вкладка крафта живёт в папке механики: нет механики, нет и вкладки.
+	_craft_panel = _build_craft()
+	if _craft_panel != null:
+		column.add_child(_craft_panel)
+		_tab_craft.visible = true
 
 	column.add_child(_make_label("Tab или Esc — закрыть", 14, Color(0.82, 0.86, 0.90)))
+	_show_tab(false)
+
+## Вкладка крафта собирается по пути из папки механики. Механики нет,
+## файла нет, и сумка остаётся только с предметами.
+func _build_craft() -> Control:
+	if not Features.on("crafting"):
+		return null
+	var path := "res://scripts/mechanics/crafting/craft_panel.gd"
+	if not ResourceLoader.exists(path):
+		return null
+	var script: Script = load(path)
+	if script == null:
+		return null
+	var panel: Control = script.new()
+	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	panel.visible = false
+	return panel
+
+func _show_tab(craft: bool) -> void:
+	var allowed := craft and _craft_panel != null
+	if _inv_view != null:
+		_inv_view.visible = not allowed
+	if _craft_panel != null:
+		_craft_panel.visible = allowed
+	if _tab_items != null:
+		_tab_items.button_pressed = not allowed
+	if _tab_craft != null:
+		_tab_craft.button_pressed = allowed
+	if allowed and _craft_panel.has_method("refresh"):
+		_craft_panel.refresh()
+
+func _tab_button(text: String) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.toggle_mode = true
+	button.focus_mode = Control.FOCUS_NONE
+	button.add_theme_font_size_override("font_size", 15)
+	button.add_theme_stylebox_override("normal", _tab_style(false))
+	button.add_theme_stylebox_override("hover", _tab_style(false))
+	button.add_theme_stylebox_override("pressed", _tab_style(true))
+	button.add_theme_stylebox_override("disabled", _tab_style(false))
+	return button
+
+func _tab_style(active: bool) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.16, 0.32, 0.20, 0.96) if active else Color(0.11, 0.12, 0.15, 0.96)
+	style.border_color = Color(0.55, 0.85, 0.55, 0.95) if active else Color(0.28, 0.31, 0.36, 0.95)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(6)
+	style.content_margin_left = 14.0
+	style.content_margin_right = 14.0
+	style.content_margin_top = 5.0
+	style.content_margin_bottom = 5.0
+	return style
+
+## Одна ячейка сетки. Пустая запись это пустая ячейка: сетка без пустых
+## мест выглядит списком, а не сумкой.
+func _make_slot(entry: Dictionary) -> Control:
+	var cell := PanelContainer.new()
+	cell.custom_minimum_size = GRID_CELL
+	var item_id := String(entry.get("item", ""))
+	cell.add_theme_stylebox_override("panel", _cell_style(item_id))
+	if item_id.is_empty():
+		return cell
+
+	var column := VBoxContainer.new()
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	column.add_theme_constant_override("separation", 0)
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cell.add_child(column)
+
+	var item_name := _make_label(ItemDB.display_name(item_id), 12, ItemDB.color(item_id))
+	item_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(item_name)
+
+	var count := _make_label("%d" % int(entry.get("count", 0)), 16, Color(1, 1, 1))
+	count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(count)
+	return cell
+
+func _cell_style(item_id: String) -> StyleBoxFlat:
+	var filled := not item_id.is_empty()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.13, 0.15, 0.18, 0.92) if filled else Color(0.09, 0.10, 0.12, 0.85)
+	style.border_color = ItemDB.color(item_id).darkened(0.25) if filled else Color(0.20, 0.22, 0.26, 0.85)
+	style.set_border_width_all(2 if filled else 1)
+	style.set_corner_radius_all(6)
+	style.content_margin_left = 4.0
+	style.content_margin_right = 4.0
+	style.content_margin_top = 6.0
+	style.content_margin_bottom = 6.0
+	return style
 
 func _make_label(text: String, size: int, color: Color) -> Label:
 	var label := Label.new()
@@ -331,22 +453,21 @@ func refresh_all() -> void:
 	_refresh_hotbar()
 
 func _refresh_inventory() -> void:
-	if _inv_list == null:
+	if _inv_grid == null:
 		return
-	for child in _inv_list.get_children():
+	for child in _inv_grid.get_children():
+		# remove_child сразу: queue_free оставил бы старые ячейки на кадр.
+		_inv_grid.remove_child(child)
 		child.queue_free()
 
 	var inv: Inventory = Game.get_inventory(Net.my_id)
-	if inv == null or inv.is_empty():
-		_inv_list.add_child(_make_label("Пусто", 16, Color(0.80, 0.83, 0.88)))
-		return
-
-	var data := inv.items()
-	var keys := data.keys()
-	keys.sort()
-	for item_id in keys:
-		var text := "%s — %d" % [ItemDB.display_name(String(item_id)), int(data[item_id])]
-		_inv_list.add_child(_make_label(text, 18, ItemDB.color(String(item_id))))
+	var stacks: Array = inv.slots() if inv != null else []
+	var cells := maxi(stacks.size(), Inventory.MIN_SLOTS)
+	for i in cells:
+		if i < stacks.size():
+			_inv_grid.add_child(_make_slot(stacks[i]))
+		else:
+			_inv_grid.add_child(_make_slot({}))
 
 func _refresh_hotbar() -> void:
 	var current := Game.get_equipped(Net.my_id)
@@ -416,6 +537,10 @@ func _toggle_inventory() -> void:
 	Game.ui_inventory_open = not Game.ui_inventory_open
 	if _inv_panel != null:
 		_inv_panel.visible = Game.ui_inventory_open
+	if Game.ui_inventory_open:
+		_refresh_inventory()
+		if _craft_panel != null and _craft_panel.visible and _craft_panel.has_method("refresh"):
+			_craft_panel.refresh()
 	if DisplayServer.get_name() == "headless":
 		return
 	if Game.ui_inventory_open:

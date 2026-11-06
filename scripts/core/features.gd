@@ -16,6 +16,7 @@ const CONFIG_SECTION := "mechanics"
 ## Порядок важен. Статистика встаёт раньше мобов: мобы наносят урон через неё.
 const MECHANICS := [
 	{"id": "stats", "path": "res://scripts/mechanics/stats/stats_mechanic.gd"},
+	{"id": "crafting", "path": "res://scripts/mechanics/crafting/crafting_mechanic.gd"},
 	{"id": "mobs", "path": "res://scripts/mechanics/mobs/mobs_mechanic.gd"},
 ]
 

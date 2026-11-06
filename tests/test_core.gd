@@ -16,6 +16,8 @@ func _initialize() -> void:
 	_test_derived_stats()
 	_test_movement()
 	_test_mobs()
+	_test_crafting()
+	_test_ram()
 	_test_feature_flags()
 	print("---")
 	print("Проверок: %d, провалов: %d" % [_checks, _failures])
@@ -40,7 +42,11 @@ func _test_item_db() -> void:
 	for item_id in ItemDB.START_INVENTORY:
 		_check(ItemDB.exists(String(item_id)), "стартовый предмет %s описан" % item_id)
 	for item_id in ItemDB.HOTBAR:
-		_check(ItemDB.is_tool_item(String(item_id)), "в панели быстрого доступа только инструменты")
+		_check(ItemDB.is_equippable(String(item_id)), "в панели быстрого доступа только то, что берут в руку")
+	_check(ItemDB.is_equippable("spear"), "копьё берут в руку")
+	_check(not ItemDB.is_equippable("wood"), "дерево в руку не берут")
+	_check(ItemDB.attack_multiplier("spear") > 1.0, "копьё усиливает удар: %.2f" % ItemDB.attack_multiplier("spear"))
+	_check(is_equal_approx(ItemDB.attack_multiplier("axe"), 1.0), "инструмент бьёт как кулак")
 
 func _test_inventory() -> void:
 	var inv := Inventory.new(ItemDB.START_INVENTORY)
@@ -64,6 +70,19 @@ func _test_inventory() -> void:
 	var copy := Inventory.from_dict(inv.to_dict())
 	_check(copy.count("stone") == inv.count("stone"), "копия сумки совпадает")
 	_check(copy.to_dict() != inv.to_dict() or copy.to_dict() == inv.to_dict(), "копия это отдельный словарь")
+
+	# Сетка сумки: ячейка на предмет, пустые дорисовывает окно.
+	var grid := Inventory.new({"axe": 1, "wood": 3})
+	var slots := grid.slots()
+	_check(slots.size() == 2, "в сетке две занятые ячейки: %d" % slots.size())
+	_check(String(slots[0]["item"]) == "axe" and int(slots[0]["count"]) == 1, "первая ячейка это топор")
+	_check(Inventory.MIN_SLOTS >= 12, "окно сумки рисует хотя бы дюжину ячеек")
+	_check(Inventory.new().slots().is_empty(), "пустая сумка не даёт ячеек")
+
+	_check(Inventory.new().free_space("spear") == 1, "под копьё есть место")
+	var one_spear := Inventory.new({"spear": 1})
+	_check(one_spear.free_space("spear") == 0, "занятое копьё место не освобождает")
+	_check(one_spear.free_space("unknown_item") == 0, "у неизвестного предмета места нет")
 
 func _test_rules() -> void:
 	_check(Rules.is_known(Rules.RESOURCE_TREE), "дерево известно правилам")
@@ -379,6 +398,59 @@ func _test_mobs() -> void:
 	_check(ResourceLoader.exists("res://scripts/mechanics/mobs/mobs_mechanic.gd"), "файл механики мобов на месте")
 	_check(ResourceLoader.exists("res://scripts/mechanics/mobs/mob.gd"), "файл моба на месте")
 
+## Крафт: рецепты это данные, проверка материалов идёт без сцены и сети.
+func _test_crafting() -> void:
+	_check(not Recipes.ids().is_empty(), "рецепты есть: %d" % Recipes.ids().size())
+	for recipe_id in Recipes.ids():
+		var rid := String(recipe_id)
+		_check(Recipes.exists(rid), "рецепт %s известен" % rid)
+		_check(ItemDB.exists(Recipes.output_item(rid)), "результат %s описан в справочнике" % rid)
+		_check(Recipes.output_count(rid) > 0, "у %s есть результат" % rid)
+		_check(Recipes.seconds(rid) > 0.0, "у %s есть время работы" % rid)
+		_check(not Recipes.cost(rid).is_empty(), "у %s есть цена" % rid)
+		_check(not Recipes.cost_text(rid).is_empty(), "цена %s печатается" % rid)
+		for item_id in Recipes.cost(rid):
+			_check(ItemDB.exists(String(item_id)), "материал %s рецепта %s описан" % [item_id, rid])
+
+	_check(not Recipes.exists("rocket"), "неизвестного рецепта нет")
+	_check(not Recipes.can_craft("rocket", {}), "неизвестный рецепт не делается")
+	_check(not Recipes.can_craft("axe", {}), "без материалов топор не сделать")
+	_check(Recipes.missing("axe", {}).size() == Recipes.cost("axe").size(), "без материалов не хватает всего")
+
+	_check(Recipes.can_craft("axe", {"wood": 2, "stone": 3}), "из двух дерева и трёх камня топор выходит")
+	_check(not Recipes.can_craft("axe", {"wood": 1, "stone": 3}), "одного дерева мало")
+	var missing: Array = Recipes.missing("axe", {"wood": 1, "stone": 3})
+	_check(missing.size() == 1, "не хватает одной позиции")
+	_check(String(missing[0]["item"]) == "wood", "не хватает именно дерева")
+	_check(int(missing[0]["have"]) == 1, "видно, сколько есть")
+
+	var inv := Inventory.new({"wood": 3, "stone": 2})
+	_check(Recipes.can_craft("spear", inv), "рецепт читает сумку, а не словарь")
+	_check(ResourceLoader.exists("res://scripts/mechanics/crafting/crafting_mechanic.gd"), "файл механики крафта на месте")
+	_check(ResourceLoader.exists("res://scripts/mechanics/crafting/craft_panel.gd"), "вкладка крафта на месте")
+
+	var config := FileAccess.open("res://features.cfg", FileAccess.READ)
+	if config != null:
+		var text := config.get_as_text()
+		config.close()
+		_check(text.contains("crafting"), "в features.cfg есть флаг крафта")
+
+## Наезд машины: урон растёт со скоростью, тяжёлого моба сбить труднее.
+func _test_ram() -> void:
+	_check(not RamRules.can_hit(0.0), "стоящая машина не бьёт")
+	_check(not RamRules.can_hit(RamRules.MIN_SPEED_MPS - 0.1), "медленная машина не бьёт")
+	_check(RamRules.can_hit(RamRules.MIN_SPEED_MPS), "на пороге удар уже идёт")
+	_check(RamRules.damage(1.0, 6.0) == 0.0, "на малой скорости урона нет")
+	var slow: float = RamRules.damage(6.0, 6.0)
+	var fast: float = RamRules.damage(15.0, 6.0)
+	_check(slow > 0.0 and fast > slow, "быстрее значит больнее: %.1f против %.1f" % [fast, slow])
+	var light: float = RamRules.damage(15.0, 4.0)
+	var heavy: float = RamRules.damage(15.0, 10.0)
+	_check(light > heavy, "лёгкого слайма сбить легче кабана: %.1f против %.1f" % [light, heavy])
+	_check(RamRules.knock_speed(15.0) > RamRules.knock_speed(4.0), "от быстрой машины отлетает дальше")
+	_check(RamRules.knock_speed(0.0) > 0.0, "отброс есть даже без скорости")
+	_check(RamRules.HIT_RADIUS > 2.0, "корпус задевает не только точку")
+
 func _test_feature_flags() -> void:
 	var defaults := {"harvest": true, "stats": true}
 	var flags := FeatureFlags.resolved(defaults, {"stats": false})
@@ -397,6 +469,7 @@ func _test_feature_flags() -> void:
 	_check(text.contains("harvest") and text.contains("stats"), "сводка называет механики: %s" % text)
 	_check(FeatureFlags.summary({}).contains("ничего"), "пустой набор флагов это ничего")
 	_check(FeatureFlags.DEFAULTS.has("stats"), "статистика включена по умолчанию")
+	_check(FeatureFlags.DEFAULTS.has("crafting"), "крафт включён по умолчанию")
 	_check(FeatureFlags.DEFAULTS.has("mobs"), "мобы включены по умолчанию")
 	_check(ResourceLoader.exists("res://scripts/mechanics/stats/stats_mechanic.gd"), "файл механики характеристик на месте")
 	_check(ResourceLoader.exists("res://scripts/core/features.gd"), "автозагрузка флагов на месте")
