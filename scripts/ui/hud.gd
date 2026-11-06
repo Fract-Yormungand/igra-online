@@ -57,7 +57,7 @@ func _build() -> void:
 	_zone.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	top.add_child(_zone)
 
-	_hint = _make_label("Tab — сумка    E — добыча    1/2 — инструмент", 14, Color(0.86, 0.90, 0.94))
+	_hint = _make_label("Tab — сумка    E — добыча    1/2 — инструмент    Esc — курсор, ещё раз — в меню", 14, Color(0.86, 0.90, 0.94))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(_hint)
@@ -272,9 +272,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		_toggle_inventory()
 		get_viewport().set_input_as_handled()
 		return
-	if event.is_action_pressed("ui_cancel") and Game.ui_inventory_open:
-		_toggle_inventory()
+	if event.is_action_pressed("ui_cancel"):
+		# Esc по шагам: закрыть сумку, потом освободить курсор, потом выйти
+		# в меню. Без последнего шага из мира не выйти, не закрывая игру.
+		if Game.ui_inventory_open:
+			_toggle_inventory()
+		elif _is_cursor_captured():
+			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+		else:
+			Net.request_leave()
 		get_viewport().set_input_as_handled()
+
+func _is_cursor_captured() -> bool:
+	return DisplayServer.get_name() != "headless" and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
 
 func _toggle_inventory() -> void:
 	Game.ui_inventory_open = not Game.ui_inventory_open

@@ -47,8 +47,7 @@ godot --path . -- --client 192.168.1.10 7777
 Шаблоны экспорта в этой установке уже стоят. Сборка одной командой:
 
 ```
-godot --headless --path . --export-release "Windows Desktop" build/windows/IgraOnline.exe
-powershell -Command "Compress-Archive -Path 'build\windows\*' -DestinationPath 'build\IgraOnline-windows.zip' -Force"
+powershell -ExecutionPolicy Bypass -File tools/build.ps1
 ```
 
 Другу уходит один файл build/IgraOnline-windows.zip, около 38 МБ. Внутри:
@@ -107,7 +106,7 @@ github.com/ЛОГИН/РЕПО/releases/latest, её и отправляешь �
 | E | добыча источника в пределах 4 метров |
 | 1, 2 | топор, кирка |
 | Tab, I | сумка |
-| Esc | освободить курсор |
+| Esc | освободить курсор, ещё раз Esc — выйти в меню |
 
 ## Проверки
 

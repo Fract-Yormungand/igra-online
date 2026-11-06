@@ -72,6 +72,15 @@ func leave() -> void:
 	players = {}
 	my_id = HOST_ID
 
+## Выйти в меню по своей воле: игрок закрывает соединение, хост гасит сервер.
+## Событие то же, что при обрыве, поэтому возврат в меню в одном месте.
+func request_leave() -> void:
+	var had_peer := multiplayer.multiplayer_peer != null
+	leave()
+	status_changed.emit("Выход в меню")
+	if had_peer:
+		connection_lost.emit("Выход в меню")
+
 func is_offline() -> bool:
 	return multiplayer.multiplayer_peer == null
 
@@ -131,8 +140,9 @@ func _on_connected_to_server() -> void:
 
 func _on_connection_failed() -> void:
 	is_client = false
-	status_changed.emit("Сервер не отвечает")
-	connection_lost.emit("Сервер не отвечает")
+	var text := "Сервер не отвечает. Проверь адрес, порт и что сервер запущен."
+	status_changed.emit(text)
+	connection_lost.emit(text)
 
 func _on_server_disconnected() -> void:
 	is_client = false

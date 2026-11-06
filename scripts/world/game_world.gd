@@ -40,6 +40,10 @@ func _ready() -> void:
 	hud.setup(self)
 
 	_on_roster_changed(Net.players)
+	# Список игроков приходит отдельным пакетом после подключения. Свой
+	# персонаж нужен сразу: без него в мире нет камеры и экран остаётся
+	# серым, хотя HUD уже нарисован.
+	_ensure_local_player()
 
 	if Net.is_client:
 		Game.request_state()
@@ -235,11 +239,20 @@ func _on_roster_changed(players: Dictionary) -> void:
 		var pid := int(key)
 		if players.has(pid):
 			continue
+		# Своего персонажа не удаляем никогда: сервер может прислать список
+		# раньше, чем зарегистрирует нас, и без камеры останется серый экран.
+		if pid == Net.my_id:
+			continue
 		var gone: Player = _player_nodes[pid]
 		_player_nodes.erase(pid)
 		if gone == local_player:
 			local_player = null
 		gone.queue_free()
+
+func _ensure_local_player() -> void:
+	if local_player != null or Net.is_offline():
+		return
+	_spawn_player(Net.my_id, Net.nick_of(Net.my_id))
 
 func _spawn_player(peer_id: int, nick: String) -> void:
 	var player := Player.new()

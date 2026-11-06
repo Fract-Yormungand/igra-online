@@ -196,10 +196,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("slot_2"):
 		Game.request_equip("pickaxe")
 		return
-	if event.is_action_pressed("ui_cancel"):
-		if DisplayServer.get_name() != "headless":
-			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-		return
 	if event is InputEventMouseButton and event.pressed and not Game.ui_inventory_open:
 		if DisplayServer.get_name() != "headless" and Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
