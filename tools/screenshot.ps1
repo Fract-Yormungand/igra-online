@@ -68,6 +68,13 @@ if (-not $Menu) {
     Start-Sleep -Milliseconds 500
     Save-Shot (Join-Path $shots "shot-harvest.png")
 
+    # C — окно статуса: здоровье, запас сил, характеристики.
+    Send-Key 0x43
+    Start-Sleep -Seconds 1
+    Save-Shot (Join-Path $shots "shot-stats.png")
+    Send-Key 0x43
+    Start-Sleep -Milliseconds 400
+
     # Tab — сумка.
     Send-Key 0x09
     Start-Sleep -Seconds 1

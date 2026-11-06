@@ -182,6 +182,22 @@ func _test_stats() -> void:
 		_check(int(attrs[key]) >= 0, "характеристика %s пришла" % key)
 	_check(stats.dodge_chance(Net.my_id) >= 0.0, "уклонение считается")
 	_check(not stats.is_downed(Net.my_id), "новый игрок на ногах")
+	_check_stats_panel()
+
+## Окно статуса собирается в HUD и наполняется из механики. Содержимое глазом
+## проверяют снимком, а здесь проверяется, что оно вообще есть и не падает.
+func _check_stats_panel() -> void:
+	var world := get_parent().get_node_or_null("World")
+	var hud: Node = world.hud if world != null else null
+	_check(hud != null and hud._stats_panel != null, "окно статуса создано в HUD")
+	if hud == null or hud._stats_panel == null:
+		return
+	hud._toggle_stats()
+	_check(hud._stats_panel.visible, "C открывает окно статуса")
+	hud._stats_panel.refresh()
+	_check(hud._stats_panel.get_child_count() > 0, "окно статуса наполнено")
+	hud._toggle_stats()
+	_check(not hud._stats_panel.visible, "повторное C закрывает окно статуса")
 
 func _spend_mana() -> void:
 	var stats := _stats()
