@@ -14,6 +14,8 @@ func _initialize() -> void:
 	_test_zones()
 	_test_day_cycle()
 	_test_derived_stats()
+	_test_movement()
+	_test_mobs()
 	_test_feature_flags()
 	print("---")
 	print("Проверок: %d, провалов: %d" % [_checks, _failures])
@@ -305,6 +307,78 @@ func _test_derived_stats() -> void:
 	_check(is_equal_approx(float(all["max_hp"]), DerivedStats.max_hp(base)), "сводка не врёт про здоровье")
 	_check(is_equal_approx(float(all["speed_kmh"]), float(base["agility"])), "сводка не врёт про скорость")
 
+## Скорость: обычный ход это половина, бег это максимум, шаг это ровно
+## 10 км/ч и только после 50 ловкости.
+func _test_movement() -> void:
+	var base := DerivedStats.start_attributes()
+	_check(not DerivedStats.walk_available(19.0), "на стартовой ловкости шаг закрыт")
+	_check(not DerivedStats.walk_available(50.0), "ровно 50 ловкости шаг не открывает")
+	_check(DerivedStats.walk_available(51.0), "выше 50 ловкости шаг открыт")
+	_check(is_equal_approx(DerivedStats.movement_kmh(19.0, false, false), 9.5), "обычный ход это половина максимума")
+	_check(is_equal_approx(DerivedStats.movement_kmh(19.0, false, true), 19.0), "бег это максимум")
+	_check(is_equal_approx(DerivedStats.movement_kmh(19.0, true, false), 9.5), "без 50 ловкости шаг не работает")
+	_check(is_equal_approx(DerivedStats.movement_kmh(60.0, true, false), 10.0), "с 60 ловкости шаг ровно 10 км/ч")
+	_check(is_equal_approx(DerivedStats.movement_kmh(60.0, true, true), 60.0), "Shift перебивает шаг")
+	_check(is_equal_approx(DerivedStats.movement_kmh(60.0, false, false), 30.0), "на 60 ловкости обычный ход 30 км/ч")
+	var derived := DerivedStats.derived(base)
+	_check(not bool(derived["walk_available"]), "в сводке шаг закрыт на старте")
+	_check(is_equal_approx(float(derived["normal_kmh"]), float(base["agility"]) * 0.5), "в сводке обычный ход это половина")
+	_check(is_equal_approx(float(derived["walk_kmh"]), 10.0), "в сводке шаг 10 км/ч")
+
+func _test_mobs() -> void:
+	var first := WorldGen.mob_spawns()
+	var second := WorldGen.mob_spawns()
+	var expected := WorldGen.BOAR_COUNT + WorldGen.SLIME_COUNT + WorldGen.SPIDER_COUNT
+	_check(first.size() == expected, "мобов столько, сколько задано: %d" % first.size())
+
+	var same := true
+	var ids := {}
+	var boars := 0
+	var slimes := 0
+	var spiders := 0
+	var spots_ok := true
+	var boars_in_forest := true
+	var slimes_at_quarry := true
+	var spiders_in_cave := true
+	var half := WorldGen.PLATFORM_SIZE * 0.5
+
+	for i in first.size():
+		var entry: Dictionary = first[i]
+		if Vector3(entry["position"]) != Vector3(second[i]["position"]):
+			same = false
+		ids[int(entry["id"])] = true
+		var kind := String(entry["type"])
+		var spot: Vector3 = entry["position"]
+		var flat := Vector3(spot.x, 0.0, spot.z)
+		if absf(spot.x) > half or absf(spot.z) > half:
+			spots_ok = false
+		match kind:
+			WorldGen.MOB_BOAR:
+				boars += 1
+				if flat.distance_to(WorldGen.FOREST_CENTER) > WorldGen.FOREST_RADIUS:
+					boars_in_forest = false
+			WorldGen.MOB_SLIME:
+				slimes += 1
+				var radius := flat.distance_to(WorldGen.MOUNTAIN_CENTER)
+				if radius < WorldGen.QUARRY_INNER - 2.0 or radius > WorldGen.QUARRY_OUTER + 2.0:
+					slimes_at_quarry = false
+			WorldGen.MOB_SPIDER:
+				spiders += 1
+				if flat.distance_to(WorldGen.MOUNTAIN_CENTER) > WorldGen.MOUNTAIN_RADIUS - 3.0:
+					spiders_in_cave = false
+
+	_check(same, "места мобов повторяемы при одном коде")
+	_check(ids.size() == first.size(), "у мобов разные номера")
+	_check(boars == WorldGen.BOAR_COUNT, "кабанов столько, сколько задано: %d" % boars)
+	_check(slimes == WorldGen.SLIME_COUNT, "слаймов столько, сколько задано: %d" % slimes)
+	_check(spiders == WorldGen.SPIDER_COUNT, "паук в шахте один: %d" % spiders)
+	_check(spots_ok, "все мобы внутри площадки")
+	_check(boars_in_forest, "кабаны стоят в лесу")
+	_check(slimes_at_quarry, "слаймы стоят у камней")
+	_check(spiders_in_cave, "паук сидит в шахте")
+	_check(ResourceLoader.exists("res://scripts/mechanics/mobs/mobs_mechanic.gd"), "файл механики мобов на месте")
+	_check(ResourceLoader.exists("res://scripts/mechanics/mobs/mob.gd"), "файл моба на месте")
+
 func _test_feature_flags() -> void:
 	var defaults := {"harvest": true, "stats": true}
 	var flags := FeatureFlags.resolved(defaults, {"stats": false})
@@ -323,6 +397,7 @@ func _test_feature_flags() -> void:
 	_check(text.contains("harvest") and text.contains("stats"), "сводка называет механики: %s" % text)
 	_check(FeatureFlags.summary({}).contains("ничего"), "пустой набор флагов это ничего")
 	_check(FeatureFlags.DEFAULTS.has("stats"), "статистика включена по умолчанию")
+	_check(FeatureFlags.DEFAULTS.has("mobs"), "мобы включены по умолчанию")
 	_check(ResourceLoader.exists("res://scripts/mechanics/stats/stats_mechanic.gd"), "файл механики характеристик на месте")
 	_check(ResourceLoader.exists("res://scripts/core/features.gd"), "автозагрузка флагов на месте")
 

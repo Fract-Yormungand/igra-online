@@ -20,6 +20,13 @@ const ACTIONS := {
 	"slot_2": [KEY_2],
 	"slot_3": [KEY_3],
 	"toggle_stats": [KEY_C],
+	"sprint": [KEY_SHIFT],
+	"toggle_walk": [KEY_ALT],
+}
+
+## Мышиные действия. Удар идёт левой кнопкой, когда курсор уже захвачен.
+const MOUSE_ACTIONS := {
+	"attack": [MOUSE_BUTTON_LEFT],
 }
 
 func _ready() -> void:
@@ -29,6 +36,18 @@ func _ready() -> void:
 		for keycode in ACTIONS[action_name]:
 			_add_key(action_name, keycode, true)
 			_add_key(action_name, keycode, false)
+	for action_name in MOUSE_ACTIONS:
+		if not InputMap.has_action(action_name):
+			InputMap.add_action(action_name)
+		for button in MOUSE_ACTIONS[action_name]:
+			_add_mouse_button(action_name, button)
+
+func _add_mouse_button(action_name: String, button: int) -> void:
+	var event := InputEventMouseButton.new()
+	event.button_index = button
+	if InputMap.action_has_event(action_name, event):
+		return
+	InputMap.action_add_event(action_name, event)
 
 func _add_key(action_name: String, keycode: int, use_physical: bool) -> void:
 	var event := InputEventKey.new()

@@ -31,6 +31,11 @@ const MAGIC_DECAY := 0.8
 ## Дальше этого накопление не считаем: выгода давно кончилась.
 const MAGIC_MAX_STEPS := 15
 const KMH_TO_MPS := 1.0 / 3.6
+## Обычное передвижение это половина максимума, Shift разгоняет до максимума.
+const NORMAL_SPEED_SHARE := 0.5
+## Шаг держит ровно эти километры в час и открывается только ловкому.
+const WALK_KMH := 10.0
+const WALK_MIN_AGILITY := 50.0
 
 ## Стартовые характеристики. Ловкость подобрана под привычные 19 км/ч,
 ## тело и сила выше магии: первый персонаж ближе к добытчику, чем к магу.
@@ -60,6 +65,21 @@ static func speed_kmh(attributes: Dictionary) -> float:
 
 static func speed_mps(attributes: Dictionary) -> float:
 	return speed_kmh(attributes) * KMH_TO_MPS
+
+## Шаг открывается только после WALK_MIN_AGILITY ловкости. Слабый персонаж
+## медленно идти не умеет, у него обычный ход и бег.
+static func walk_available(agility: float) -> bool:
+	return agility > WALK_MIN_AGILITY
+
+## Скорость в км/ч по режиму движения. Бег перебивает шаг: Shift всегда
+## разгоняет до максимума, даже если режим шага включён.
+static func movement_kmh(max_kmh: float, walking: bool, running: bool) -> float:
+	var top_speed := maxf(0.0, max_kmh)
+	if running:
+		return top_speed
+	if walking and walk_available(top_speed):
+		return minf(WALK_KMH, top_speed)
+	return top_speed * NORMAL_SPEED_SHARE
 
 ## Действий за раунд. Меньше одного не бывает.
 static func actions_per_round(attributes: Dictionary) -> int:
@@ -174,6 +194,9 @@ static func derived(attributes: Dictionary) -> Dictionary:
 		"max_mp": max_mp(a),
 		"speed_kmh": speed_kmh(a),
 		"speed_mps": speed_mps(a),
+		"normal_kmh": speed_kmh(a) * NORMAL_SPEED_SHARE,
+		"walk_kmh": WALK_KMH,
+		"walk_available": walk_available(speed_kmh(a)),
 		"actions": actions_per_round(a),
 		"penetration_vs_self": penetration(strength, body),
 		"reference_damage": damage_through_body(strength, body),

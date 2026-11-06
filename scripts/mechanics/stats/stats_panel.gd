@@ -59,6 +59,8 @@ func refresh() -> void:
 	_derived_label.text = "\n".join(PackedStringArray([
 		"Состояние           x%.2f" % float(derived["coefficient"]),
 		"Скорость            %d км/ч" % int(round(float(derived["speed_kmh"]))),
+		"Обычный ход         %d км/ч" % int(round(float(derived["normal_kmh"]))),
+		("Шаг                 %d км/ч" % int(round(float(derived["walk_kmh"])))) if bool(derived["walk_available"]) else "Шаг                 нужна ловкость выше 50",
 		"Действий за раунд   %d" % int(derived["actions"]),
 		"Удар по телу %d: %.1f" % [int(attrs["body"]), float(derived["reference_damage"])],
 		"Подъём на руку      %d кг" % int(round(float(derived["carry_kg"]))),

@@ -15,6 +15,10 @@ const PITCH_MAX := 0.55
 const CAMERA_LENGTH := 4.6
 const REACH := 4.2
 const HARVEST_COOLDOWN := 0.35
+const ATTACK_COOLDOWN := 0.7
+## Толчок от моба это короткий рывок, а не полёт: скорость гаснет быстро.
+const PUSH_TIME := 0.25
+const PUSH_DECAY := 24.0
 const SEND_INTERVAL := 1.0 / 15.0
 const REMOTE_LERP_SPEED := 12.0
 
@@ -39,6 +43,13 @@ var _target_vehicle: Car = null
 var _vehicle: Car = null
 var _shape: CollisionShape3D = null
 var _revive_requested := false
+var _attack_cooldown := 0.0
+## Режим шага: игрок держит ровно 10 км/ч, пока ловкость выше 50.
+var _walking := false
+var _slow_left := 0.0
+var _slow_factor := 1.0
+var _push_left := 0.0
+var _push_velocity := Vector3.ZERO
 
 func setup(id: int, nick: String, local: bool, spawn_position: Vector3, yaw: float) -> void:
 	peer_id = id
@@ -156,6 +167,8 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_cooldown = maxf(0.0, _cooldown - delta)
+	_attack_cooldown = maxf(0.0, _attack_cooldown - delta)
+	_slow_left = maxf(0.0, _slow_left - delta)
 	_check_downed()
 
 	if _vehicle != null:
@@ -171,7 +184,14 @@ func _physics_process(delta: float) -> void:
 	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction := (transform.basis * Vector3(input_dir.x, 0.0, input_dir.y))
 	var move_speed := _move_speed()
-	if direction.length() > 0.01:
+	if _push_left > 0.0:
+		# Толчок от моба: короткий рывок, управление на эти доли секунды
+		# отпускает, иначе игрока отбрасывает на полшага.
+		_push_left -= delta
+		velocity.x = _push_velocity.x
+		velocity.z = _push_velocity.z
+		_push_velocity = _push_velocity.move_toward(Vector3.ZERO, PUSH_DECAY * delta)
+	elif direction.length() > 0.01:
 		direction = direction.normalized()
 		var accel := ACCELERATION if is_on_floor() else ACCELERATION * AIR_CONTROL
 		velocity.x = move_toward(velocity.x, direction.x * move_speed, accel * delta * 10.0)
@@ -225,16 +245,56 @@ func _find_target_vehicle() -> Car:
 	return best
 
 ## Скорость берётся из ловкости: одно очко это один километр в час, как в
-## калькуляторе. Раненый и обессиленный идёт медленнее, потому что ловкость
-## умножается на коэффициент состояния. Нет механики, работает запасная скорость.
+## калькуляторе. Обычный ход это половина максимума, Shift разгоняет до
+## максимума, включённый шаг держит ровно 10 км/ч. Раненый и обессиленный
+## идёт медленнее, потому что ловкость умножается на коэффициент состояния.
+## Нет механики, работает запасная скорость.
 func _move_speed() -> float:
+	var kmh := DerivedStats.movement_kmh(_top_speed_kmh(), _walking, Input.is_action_pressed("sprint"))
+	return kmh * DerivedStats.KMH_TO_MPS * _slow_multiplier()
+
+func _top_speed_kmh() -> float:
 	var stats := _stats()
 	if stats == null:
-		return SPEED
-	return float(stats.speed_mps(peer_id))
+		return SPEED * 3.6
+	return float(stats.speed_kmh(peer_id))
+
+## Замедление от паутины режет любую скорость, пока висит.
+func _slow_multiplier() -> float:
+	return _slow_factor if _slow_left > 0.0 else 1.0
 
 func _stats() -> Node:
 	return Features.mechanic("stats")
+
+## Шаг открыт только ловкому: на слабой ловкости режим не включается.
+func _can_walk() -> bool:
+	return DerivedStats.walk_available(_top_speed_kmh())
+
+func _toggle_walk() -> void:
+	if not _can_walk():
+		_walking = false
+		Game.notify_peer(peer_id, "Шаг откроется, когда ловкость станет выше 50")
+		return
+	_walking = not _walking
+	Game.notify_peer(peer_id, "Шаг включён: 10 км/ч" if _walking else "Шаг выключен: обычный ход")
+
+## Толчок от моба. Позиция персонажа клиентская, поэтому решает сервер,
+## а применяет клиент-владелец: игрока отбрасывает на его же экране.
+func apply_push(direction: Vector3, force: float) -> void:
+	if not is_local:
+		return
+	var flat := Vector3(direction.x, 0.0, direction.z)
+	if flat.length() < 0.01:
+		flat = -global_transform.basis.z
+	_push_velocity = flat.normalized() * force
+	_push_left = PUSH_TIME
+
+## Замедление от паутины: скорость падает на время, потом возвращается сама.
+func apply_slow(duration: float, factor: float = 0.4) -> void:
+	if not is_local:
+		return
+	_slow_left = maxf(_slow_left, duration)
+	_slow_factor = clampf(factor, 0.05, 1.0)
 
 ## Упавшего игрока уводит в лагерь его же клиент: позиция персонажа и так
 ## клиентская. Сервер только решает, что здоровья больше нет.
@@ -294,6 +354,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _pivot != null:
 			_pivot.rotation.x = _pitch
 		return
+	if event.is_action_pressed("toggle_walk"):
+		_toggle_walk()
+		return
+	if event.is_action_pressed("attack") and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
+		_try_attack()
+		return
 	if event.is_action_pressed("interact"):
 		if _vehicle != null:
 			Game.request_vehicle_exit()
@@ -318,6 +384,39 @@ func _try_harvest() -> void:
 		return
 	_cooldown = HARVEST_COOLDOWN
 	Game.request_harvest(_target.resource_id)
+
+## Удар по мобу. Что именно перед игроком, решает клиент, а сервер проверяет
+## расстояние и сам считает урон по характеристикам.
+func _try_attack() -> void:
+	if _attack_cooldown > 0.0:
+		return
+	var mobs := Features.mechanic("mobs")
+	if mobs == null:
+		return
+	var target := _find_mob()
+	if target == null:
+		return
+	_attack_cooldown = ATTACK_COOLDOWN
+	mobs.request_attack(target.mob_id)
+
+func _find_mob() -> Mob:
+	var best: Mob = null
+	var best_distance := REACH
+	var forward := -global_transform.basis.z
+	for node in get_tree().get_nodes_in_group("mobs"):
+		var candidate := node as Mob
+		if candidate == null or not candidate.is_alive():
+			continue
+		var to_target := candidate.global_position - global_position
+		to_target.y = 0.0
+		var distance := to_target.length()
+		if distance > best_distance:
+			continue
+		if distance > 0.05 and forward.dot(to_target / distance) < 0.15:
+			continue
+		best = candidate
+		best_distance = distance
+	return best
 
 func _color_for_peer() -> Color:
 	var hue := fmod(float(peer_id) * 0.37, 1.0)

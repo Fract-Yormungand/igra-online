@@ -11,6 +11,7 @@ const DEFAULTS := {
 	"vehicles": true,
 	"day_night": true,
 	"stats": true,
+	"mobs": true,
 }
 
 ## Итоговые флаги: ключи только из defaults, значения перекрываются overrides.

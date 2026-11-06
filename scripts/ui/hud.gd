@@ -96,7 +96,7 @@ func _build() -> void:
 	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center_box.add_child(_clock)
 
-	_hint = _make_label("Tab — сумка    C — статус    E — добыча    Shift — бег    1/2 — инструмент    Esc — курсор, ещё раз — в меню", 14, Color(0.86, 0.90, 0.94))
+	_hint = _make_label("Tab — сумка    C — статус    E — добыча    ЛКМ — удар    Shift — бег    Alt — шаг    1/2 — инструмент    Esc — меню", 14, Color(0.86, 0.90, 0.94))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(_hint)

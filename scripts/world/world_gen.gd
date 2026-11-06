@@ -33,6 +33,16 @@ const SPAWN_POINTS := 8
 ## Машины стоят у лагеря: до них пара шагов от точки появления.
 const CAR_SPAWNS := 2
 
+## Мобы. Вид задаёт поведение в механике mobs.
+const MOB_BOAR := "boar"
+const MOB_SLIME := "slime"
+const MOB_SPIDER := "spider"
+
+## Сколько кого. Кабаны в лесу, слаймы у камней, паук один в шахте.
+const BOAR_COUNT := 4
+const SLIME_COUNT := 3
+const SPIDER_COUNT := 1
+
 static func build() -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = WORLD_SEED
@@ -118,6 +128,34 @@ static func car_spawns() -> Array:
 			"position": Vector3(side * offset, 0.3, 31.0 + float(i) * 0.5),
 			"rot_y": -0.45 * side,
 		})
+	return result
+
+## Места мобов считаются кодом, а не рандомом: сервер и клиент строят
+## одинаковые узлы в одинаковых точках, поэтому по сети едет только
+## поведение, а не точка появления.
+static func mob_spawns() -> Array:
+	var result: Array = []
+	var next_id := 0
+
+	for i in BOAR_COUNT:
+		var angle := TAU * float(i) / float(BOAR_COUNT) + 0.6
+		var spot := FOREST_CENTER + Vector3(cos(angle) * 13.0, 0.0, sin(angle) * 13.0)
+		result.append({"id": next_id, "type": MOB_BOAR, "position": spot, "rot_y": angle + PI})
+		next_id += 1
+
+	for i in SLIME_COUNT:
+		var angle := TAU * float(i) / float(SLIME_COUNT) + 0.9
+		var radius := QUARRY_INNER + 6.0
+		var spot := MOUNTAIN_CENTER + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
+		result.append({"id": next_id, "type": MOB_SLIME, "position": spot, "rot_y": angle})
+		next_id += 1
+
+	for i in SPIDER_COUNT:
+		var angle := TAU * float(i) / float(SPIDER_COUNT)
+		var spot := MOUNTAIN_CENTER + Vector3(cos(angle) * 8.0, 0.0, sin(angle) * 8.0)
+		result.append({"id": next_id, "type": MOB_SPIDER, "position": spot, "rot_y": angle})
+		next_id += 1
+
 	return result
 
 static func spawn_position(index: int) -> Vector3:

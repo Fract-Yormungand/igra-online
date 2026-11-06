@@ -18,6 +18,8 @@ var _car_id := -1
 var _car_start := Vector3.ZERO
 var _mp_before := 0.0
 var _mp_after := 0.0
+var _boar_id := -1
+var _boar_start := Vector3.ZERO
 
 func _ready() -> void:
 	print("[E2E] старт")
@@ -158,6 +160,19 @@ func _process(delta: float) -> void:
 			var stats := _stats()
 			var mp_now: float = stats.mp(Net.my_id) if stats != null else _mp_before
 			_check(mp_now < _mp_before - 1.0, "сервер списал запас сил по просьбе клиента: было %.0f, стало %.0f" % [_mp_before, mp_now])
+			_check_speeds()
+			_phase = 17
+			_wait = 0.2
+		17:
+			_mobs_setup()
+			_phase = 18
+			_wait = 0.5
+		18:
+			_mobs_attack()
+			_phase = 19
+			_wait = 1.2
+		19:
+			_mobs_check()
 			_finish()
 
 ## Характеристики приходят с сервера отдельным пакетом: клиент обязан получить
@@ -204,6 +219,92 @@ func _check_stats_panel() -> void:
 	_check(hud._stats_panel.get_child_count() > 0, "окно статуса наполнено")
 	hud._toggle_stats()
 	_check(not hud._stats_panel.visible, "повторное C закрывает окно статуса")
+
+## Скорость: обычный ход половина, Shift полная, шаг без 50 ловкости
+## не включается.
+func _check_speeds() -> void:
+	var player := _local_player()
+	var stats := _stats()
+	if player == null or stats == null:
+		_fail("не проверить скорость: нет персонажа или характеристик")
+		return
+	var top: float = stats.speed_mps(Net.my_id)
+	Input.action_release("sprint")
+	_check(is_equal_approx(player._move_speed(), top * 0.5), "обычный ход это половина скорости: %.2f м/с" % player._move_speed())
+	Input.action_press("sprint")
+	_check(is_equal_approx(player._move_speed(), top), "Shift даёт полную скорость: %.2f м/с" % player._move_speed())
+	Input.action_release("sprint")
+	_check(not player._can_walk(), "на 19 ловкости шаг закрыт")
+	player._toggle_walk()
+	_check(not player._walking, "без 50 ловкости шаг не включается")
+
+## Мобы: три вида на месте, кабан реагирует на удар.
+func _mobs_setup() -> void:
+	var mobs := Features.mechanic("mobs")
+	_check(mobs != null, "механика мобов создалась")
+	if mobs == null:
+		return
+	var snapshot: Dictionary = mobs.snapshot()
+	_check(snapshot.size() >= 8, "мобы расставлены: %d" % snapshot.size())
+	var kinds := {"boar": 0, "slime": 0, "spider": 0}
+	for key in snapshot:
+		var kind := String(snapshot[key].get("type", ""))
+		kinds[kind] = int(kinds.get(kind, 0)) + 1
+	print("[E2E] мобы: кабанов %d, слаймов %d, пауков %d" % [
+		int(kinds.get("boar", 0)), int(kinds.get("slime", 0)), int(kinds.get("spider", 0))
+	])
+	_check(int(kinds.get("boar", 0)) > 0, "кабаны в лесу есть: %d" % int(kinds.get("boar", 0)))
+	_check(int(kinds.get("slime", 0)) > 0, "слаймы у камней есть: %d" % int(kinds.get("slime", 0)))
+	_check(int(kinds.get("spider", 0)) == 1, "паук в шахте один")
+	var boar := _first_mob("boar")
+	if boar.is_empty():
+		_fail("не нашёл кабана в снимке")
+		return
+	_boar_id = int(boar["id"])
+	_boar_start = Vector3(boar["position"])
+	var player := _local_player()
+	if player == null:
+		_fail("не нашёл персонажа для удара по кабану")
+		return
+	# Ставим персонажа рядом с кабаном: сервер проверит расстояние сам.
+	player.global_position = _boar_start + Vector3(2.0, 0.4, 0.0)
+	print("[E2E] бьём кабана #%d в точке %.1f, %.1f" % [_boar_id, _boar_start.x, _boar_start.z])
+
+func _mobs_attack() -> void:
+	var mobs := Features.mechanic("mobs")
+	if mobs == null or _boar_id < 0:
+		_fail("некому бить: механика мобов или цель пропала")
+		return
+	mobs.request_attack(_boar_id)
+
+func _mobs_check() -> void:
+	var mobs := Features.mechanic("mobs")
+	var snapshot: Dictionary = mobs.snapshot() if mobs != null else {}
+	var state: Dictionary = snapshot.get(_boar_id, {})
+	_check(not state.is_empty(), "кабан есть в снимке после удара")
+	if state.is_empty():
+		return
+	_check(float(state.get("hp", 0.0)) < 40.0, "удар снял здоровье кабана: %.1f" % float(state.get("hp", 0.0)))
+	_check(String(state.get("mode", "")) == "flee", "кабан убегает, режим %s" % String(state.get("mode", "")))
+	var moved := Vector3(state.get("position", Vector3.ZERO)).distance_to(_boar_start)
+	_check(moved > 2.0, "кабан отбежал на %.1f м" % moved)
+	var stats := _stats()
+	if stats != null:
+		_check(stats.hp(Net.my_id) > 0.0, "после удара и толчка игрок жив")
+
+func _first_mob(kind: String) -> Dictionary:
+	var mobs := Features.mechanic("mobs")
+	if mobs == null:
+		return {}
+	var snapshot: Dictionary = mobs.snapshot()
+	for key in snapshot:
+		var state: Dictionary = snapshot[key]
+		if String(state.get("type", "")) != kind:
+			continue
+		if not bool(state.get("alive", false)):
+			continue
+		return {"id": int(key), "position": state.get("position", Vector3.ZERO)}
+	return {}
 
 func _spend_mana() -> void:
 	var stats := _stats()

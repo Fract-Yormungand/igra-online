@@ -95,6 +95,9 @@ func state_coefficient(peer_id: int) -> float:
 func effective_attributes(peer_id: int) -> Dictionary:
 	return DerivedStats.effective(attributes(peer_id), state_coefficient(peer_id))
 
+func speed_kmh(peer_id: int) -> float:
+	return DerivedStats.speed_kmh(effective_attributes(peer_id))
+
 func speed_mps(peer_id: int) -> float:
 	return DerivedStats.speed_mps(effective_attributes(peer_id))
 
