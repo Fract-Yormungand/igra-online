@@ -30,6 +30,9 @@ const CAVE_ORES := 12
 const SPAWN_CENTER := Vector3(0.0, 0.0, 26.0)
 const SPAWN_POINTS := 8
 
+## Машины стоят у лагеря: до них пара шагов от точки появления.
+const CAR_SPAWNS := 2
+
 static func build() -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = WORLD_SEED
@@ -89,6 +92,7 @@ static func build() -> Dictionary:
 
 	return {
 		"resources": resources,
+		"vehicles": car_spawns(),
 		"spawn_points": _spawn_points(),
 		"platform_size": PLATFORM_SIZE,
 		"wall_height": WALL_HEIGHT,
@@ -101,6 +105,20 @@ static func build() -> Dictionary:
 		"quarry_inner": QUARRY_INNER,
 		"quarry_outer": QUARRY_OUTER,
 	}
+
+## Места машин. Считаются кодом, а не константой с векторами, чтобы
+## одинаковый список был и на сервере, и на клиенте.
+static func car_spawns() -> Array:
+	var result: Array = []
+	for i in CAR_SPAWNS:
+		var side := -1.0 if i % 2 == 0 else 1.0
+		var offset := 7.0 + 10.0 * float(i / 2)
+		result.append({
+			"id": i,
+			"position": Vector3(side * offset, 0.3, 31.0 + float(i) * 0.5),
+			"rot_y": -0.45 * side,
+		})
+	return result
 
 static func spawn_position(index: int) -> Vector3:
 	var points := _spawn_points()

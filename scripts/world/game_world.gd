@@ -7,6 +7,8 @@ const HUDScript := preload("res://scripts/ui/hud.gd")
 
 const MOUNTAIN_SEGMENTS := 40
 const MOUNTAIN_ENTRANCE_WIDTH := 0.30
+## Небо перекрашиваем не каждый кадр: смена цвета тянет пересчёт освещения.
+const DAY_UPDATE_INTERVAL := 0.25
 const ROCK_COLOR := Color(0.38, 0.37, 0.36)
 const GROUND_COLOR := Color(0.31, 0.43, 0.25)
 
@@ -17,6 +19,13 @@ var hud: CanvasLayer
 var local_player: Player = null
 
 var _player_nodes: Dictionary = {}
+var _vehicle_nodes: Dictionary = {}
+
+var _environment: Environment
+var _sky_material: ProceduralSkyMaterial
+var _sun: DirectionalLight3D
+var _moon: DirectionalLight3D
+var _day_timer := 0.0
 
 func _ready() -> void:
 	world_data = WorldGen.build()
@@ -26,13 +35,17 @@ func _ready() -> void:
 	_build_mountain()
 	_spawn_resources()
 
+	_build_vehicles()
+
 	players_root = Node3D.new()
 	players_root.name = "Players"
 	add_child(players_root)
 
-	Game.setup_world(world_data["resources"])
+	Game.setup_world(world_data["resources"], world_data.get("vehicles", []))
 	Net.roster_changed.connect(_on_roster_changed)
 	Net.player_transform.connect(_on_player_transform)
+	Net.vehicle_transform.connect(_on_vehicle_transform)
+	Game.vehicles_changed.connect(_on_vehicles_changed)
 	Game.state_reset.connect(_on_state_reset)
 
 	hud = HUDScript.new()
@@ -44,12 +57,13 @@ func _ready() -> void:
 	# персонаж нужен сразу: без него в мире нет камеры и экран остаётся
 	# серым, хотя HUD уже нарисован.
 	_ensure_local_player()
+	_on_vehicles_changed()
 
 	if Net.is_client:
 		Game.request_state()
 
-	print("[WORLD] готов: сервер=%s клиент=%s источников=%d" % [
-		Net.is_host, Net.is_client, resource_nodes.size()
+	print("[WORLD] готов: сервер=%s клиент=%s источников=%d машин=%d" % [
+		Net.is_host, Net.is_client, resource_nodes.size(), _vehicle_nodes.size()
 	])
 
 func get_local_player() -> Player:
@@ -57,28 +71,52 @@ func get_local_player() -> Player:
 
 # --- построение ------------------------------------------------------------
 
+## Небо, солнце и луна. Цвета и углы каждый раз считает DayCycle из
+## системных часов, поэтому у всех игроков одна и та же ночь.
 func _build_environment() -> void:
-	var env := Environment.new()
-	env.background_mode = Environment.BG_SKY
+	_environment = Environment.new()
+	_environment.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
-	var sky_material := ProceduralSkyMaterial.new()
-	sky_material.sky_top_color = Color(0.29, 0.49, 0.80)
-	sky_material.sky_horizon_color = Color(0.72, 0.82, 0.92)
-	sky_material.ground_bottom_color = Color(0.24, 0.30, 0.26)
-	sky_material.ground_horizon_color = Color(0.72, 0.82, 0.92)
-	sky.sky_material = sky_material
-	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 1.0
+	_sky_material = ProceduralSkyMaterial.new()
+	sky.sky_material = _sky_material
+	_environment.sky = sky
+	_environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	var world_env := WorldEnvironment.new()
-	world_env.environment = env
+	world_env.environment = _environment
 	add_child(world_env)
 
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-52.0, -38.0, 0.0)
-	sun.light_energy = 1.15
-	sun.shadow_enabled = true
-	add_child(sun)
+	_sun = DirectionalLight3D.new()
+	_sun.shadow_enabled = true
+	add_child(_sun)
+
+	# Тени от луны не включаю: дорого и почти незаметно.
+	_moon = DirectionalLight3D.new()
+	_moon.light_color = Color(0.62, 0.70, 0.95)
+	_moon.shadow_enabled = false
+	add_child(_moon)
+
+	_update_day_cycle()
+
+func _process(delta: float) -> void:
+	_day_timer += delta
+	if _day_timer < DAY_UPDATE_INTERVAL:
+		return
+	_day_timer = 0.0
+	_update_day_cycle()
+
+func _update_day_cycle() -> void:
+	if _sun == null or _sky_material == null:
+		return
+	var progress := DayCycle.progress_now()
+	_sun.rotation_degrees = DayCycle.sun_rotation_degrees(progress)
+	_sun.light_energy = DayCycle.sun_energy(progress)
+	_moon.rotation_degrees = DayCycle.moon_rotation_degrees(progress)
+	_moon.light_energy = DayCycle.moon_energy(progress)
+	_sky_material.sky_top_color = DayCycle.sky_top(progress)
+	_sky_material.sky_horizon_color = DayCycle.sky_horizon(progress)
+	_sky_material.ground_bottom_color = DayCycle.ground_color(progress)
+	_sky_material.ground_horizon_color = DayCycle.sky_horizon(progress)
+	_environment.ambient_light_energy = DayCycle.ambient_energy(progress)
 
 func _build_platform() -> void:
 	var size := float(world_data["platform_size"])
@@ -221,6 +259,52 @@ func _spawn_resources() -> void:
 		add_child(node)
 		resource_nodes[int(entry["id"])] = node
 
+# --- машины ----------------------------------------------------------------
+
+func _build_vehicles() -> void:
+	for entry in world_data.get("vehicles", []):
+		var car := Car.new()
+		car.setup(int(entry["id"]), entry["position"], float(entry["rot_y"]))
+		car.name = "C_%d" % int(entry["id"])
+		add_child(car)
+		_vehicle_nodes[int(entry["id"])] = car
+
+## Сервер назначил водителей: свою машину ведём сами, чужие только показываем.
+func _on_vehicles_changed() -> void:
+	for key in _vehicle_nodes:
+		var car: Car = _vehicle_nodes[key]
+		var state: Dictionary = Game.vehicles.get(int(key), {})
+		var driver := int(state.get("driver", 0))
+		var mine := driver != 0 and driver == Net.my_id
+		car.set_driver(driver, mine)
+		if driver != 0 and not mine:
+			car.set_remote_state(
+				state.get("position", car.global_position),
+				float(state.get("rotation", car.rotation.y))
+			)
+	if local_player == null:
+		return
+	var my_car := _my_car_id()
+	if my_car < 0:
+		if local_player.get_vehicle() != null:
+			local_player.leave_vehicle()
+		return
+	var node: Car = _vehicle_nodes.get(my_car, null)
+	if node != null and local_player.get_vehicle() != node:
+		local_player.enter_vehicle(node)
+
+func _on_vehicle_transform(peer_id: int, vehicle_id: int, position: Vector3, rotation_y: float) -> void:
+	Game.note_vehicle_transform(vehicle_id, peer_id, position, rotation_y)
+	var car: Car = _vehicle_nodes.get(vehicle_id, null)
+	if car != null:
+		car.set_remote_state(position, rotation_y)
+
+func _my_car_id() -> int:
+	for key in Game.vehicles:
+		if int(Game.vehicles[key].get("driver", 0)) == Net.my_id:
+			return int(key)
+	return -1
+
 # --- игроки ----------------------------------------------------------------
 
 func _on_roster_changed(players: Dictionary) -> void:
@@ -248,6 +332,9 @@ func _on_roster_changed(players: Dictionary) -> void:
 		if gone == local_player:
 			local_player = null
 		gone.queue_free()
+
+	if local_player != null:
+		_on_vehicles_changed()
 
 func _ensure_local_player() -> void:
 	if local_player != null or Net.is_offline():

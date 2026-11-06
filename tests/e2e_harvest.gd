@@ -14,6 +14,8 @@ var _failures := 0
 var _checks := 0
 var _tree_id := -1
 var _wood_before := 0
+var _car_id := -1
+var _car_start := Vector3.ZERO
 
 func _ready() -> void:
 	print("[E2E] старт")
@@ -96,6 +98,56 @@ func _process(delta: float) -> void:
 			_phase = 9
 			_wait = 0.2
 		9:
+			# Машины: сначала садимся, потом едем, потом выходим.
+			_car_id = _first_free_car()
+			if _car_id < 0:
+				_fail("в мире нет свободной машины")
+				_finish()
+				return
+			var player := _local_player()
+			if player == null:
+				_fail("не нашёл своего персонажа перед посадкой в машину")
+				_finish()
+				return
+			var car_state: Dictionary = Game.vehicles.get(_car_id, {})
+			player.global_position = Vector3(car_state.get("position", Vector3.ZERO)) + Vector3(2.6, 0.6, 0.0)
+			_phase = 10
+			_wait = 0.5
+		10:
+			print("[E2E] садимся в машину #%d" % _car_id)
+			Game.request_vehicle_enter(_car_id)
+			_phase = 11
+			_wait = 0.6
+		11:
+			var state: Dictionary = Game.vehicles.get(_car_id, {})
+			_check(int(state.get("driver", 0)) == Net.my_id, "сервер посадил за руль, водитель %d" % int(state.get("driver", 0)))
+			_check(_local_player() != null and _local_player().get_vehicle() != null, "игрок видит себя в машине")
+			_car_start = Vector3(state.get("position", Vector3.ZERO))
+			_phase = 12
+			_wait = 0.8
+		12:
+			# Без газа машина обязана стоять: иначе она уезжает сама.
+			var parked: Dictionary = Game.vehicles.get(_car_id, {})
+			var drift := Vector3(parked.get("position", Vector3.ZERO)).distance_to(_car_start)
+			_check(drift < 1.0, "без газа машина стоит, сдвиг %.2f м" % drift)
+			Input.action_press("move_forward")
+			_phase = 13
+			_wait = 1.0
+		13:
+			Input.action_release("move_forward")
+			var moved: Dictionary = Game.vehicles.get(_car_id, {})
+			var travelled := Vector3(moved.get("position", Vector3.ZERO)).distance_to(_car_start)
+			_check(travelled > 2.0, "машина проехала %.1f м" % travelled)
+			Game.request_vehicle_exit()
+			_phase = 14
+			_wait = 0.6
+		14:
+			var left: Dictionary = Game.vehicles.get(_car_id, {})
+			_check(int(left.get("driver", 0)) == 0, "после выхода машина свободна, водитель %d" % int(left.get("driver", 0)))
+			_check(_local_player() != null and _local_player().get_vehicle() == null, "игрок больше не в машине")
+			_phase = 15
+			_wait = 0.2
+		15:
 			_finish()
 
 func _inv() -> Inventory:
@@ -116,6 +168,12 @@ func _first_resource(kind: String) -> Dictionary:
 			continue
 		return {"id": int(key), "position": state.get("position", Vector3.ZERO)}
 	return {}
+
+func _first_free_car() -> int:
+	for key in Game.vehicles:
+		if int(Game.vehicles[key].get("driver", 0)) == 0:
+			return int(key)
+	return -1
 
 func _hits(resource_id: int) -> int:
 	return int(Game.resources.get(resource_id, {}).get("hits", -1))

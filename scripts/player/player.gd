@@ -35,6 +35,9 @@ var _send_timer := 0.0
 var _remote_position := Vector3.ZERO
 var _remote_yaw := 0.0
 var _target: ResourceNode = null
+var _target_vehicle: Car = null
+var _vehicle: Car = null
+var _shape: CollisionShape3D = null
 
 func setup(id: int, nick: String, local: bool, spawn_position: Vector3, yaw: float) -> void:
 	peer_id = id
@@ -54,6 +57,32 @@ func set_display_name(nick: String) -> void:
 func get_target() -> ResourceNode:
 	return _target
 
+func get_target_vehicle() -> Car:
+	return _target_vehicle
+
+func get_vehicle() -> Car:
+	return _vehicle
+
+## Садится в машину: своё тело больше не толкает физику, но позиция идёт
+## в сеть, поэтому другие видят игрока в машине, а не рядом с ней.
+func enter_vehicle(car: Car) -> void:
+	_vehicle = car
+	velocity = Vector3.ZERO
+	_target = null
+	_target_vehicle = null
+	if _shape != null:
+		_shape.disabled = true
+
+func leave_vehicle() -> void:
+	var car := _vehicle
+	_vehicle = null
+	if _shape != null:
+		_shape.disabled = false
+	if car == null:
+		return
+	var side := car.global_transform.basis.x.normalized() * 2.4
+	global_position = car.global_position + side + Vector3(0.0, 0.4, 0.0)
+
 func _ready() -> void:
 	collision_layer = 1
 	collision_mask = 1
@@ -71,6 +100,7 @@ func _build_body() -> void:
 	shape.shape = capsule
 	shape.position = Vector3(0.0, 0.9, 0.0)
 	add_child(shape)
+	_shape = shape
 
 	_mesh = MeshInstance3D.new()
 	var body_mesh := CapsuleMesh.new()
@@ -126,6 +156,10 @@ func _physics_process(delta: float) -> void:
 
 	_cooldown = maxf(0.0, _cooldown - delta)
 
+	if _vehicle != null:
+		_ride_vehicle(delta)
+		return
+
 	if is_on_floor():
 		if Input.is_action_just_pressed("jump"):
 			velocity.y = JUMP_VELOCITY
@@ -147,10 +181,43 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	_target = _find_target()
+	_target_vehicle = _find_target_vehicle()
 	_send_timer += delta
 	if _send_timer >= SEND_INTERVAL:
 		_send_timer = 0.0
 		Net.send_transform(global_position, rotation.y)
+
+## Едем на машине: сидим на месте водителя, свою физику и обзор крутит она.
+func _ride_vehicle(delta: float) -> void:
+	if not is_instance_valid(_vehicle):
+		leave_vehicle()
+		return
+	velocity = Vector3.ZERO
+	global_position = _vehicle.seat_position()
+	_yaw = _vehicle.rotation.y
+	rotation.y = _yaw
+	_target = null
+	_target_vehicle = null
+	_send_timer += delta
+	if _send_timer >= SEND_INTERVAL:
+		_send_timer = 0.0
+		Net.send_transform(global_position, rotation.y)
+
+func _find_target_vehicle() -> Car:
+	var best: Car = null
+	var best_distance := REACH + 1.6
+	for node in get_tree().get_nodes_in_group("vehicles"):
+		var candidate := node as Car
+		if candidate == null or not candidate.is_free():
+			continue
+		var to_target := candidate.global_position - global_position
+		to_target.y = 0.0
+		var distance := to_target.length()
+		if distance >= best_distance:
+			continue
+		best = candidate
+		best_distance = distance
+	return best
 
 func set_remote_state(new_position: Vector3, new_yaw: float) -> void:
 	if is_local:
@@ -181,13 +248,21 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not is_local:
 		return
 	if event is InputEventMouseMotion and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
-		_yaw -= event.relative.x * MOUSE_SENSITIVITY
-		rotation.y = _yaw
+		# В машине обзор держится за корпусом, иначе руль и мышь спорят.
+		if _vehicle == null:
+			_yaw -= event.relative.x * MOUSE_SENSITIVITY
+			rotation.y = _yaw
 		_pitch = clampf(_pitch - event.relative.y * MOUSE_SENSITIVITY, PITCH_MIN, PITCH_MAX)
 		if _pivot != null:
 			_pivot.rotation.x = _pitch
 		return
 	if event.is_action_pressed("interact"):
+		if _vehicle != null:
+			Game.request_vehicle_exit()
+			return
+		if _target_vehicle != null:
+			Game.request_vehicle_enter(_target_vehicle.car_id)
+			return
 		_try_harvest()
 		return
 	if event.is_action_pressed("slot_1"):

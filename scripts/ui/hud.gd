@@ -8,6 +8,7 @@ var _world: Node = null
 var _root: Control
 var _status: Label
 var _zone: Label
+var _clock: Label
 var _hint: Label
 var _prompt: Label
 var _toast: Label
@@ -53,9 +54,18 @@ func _build() -> void:
 	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(_status)
 
+	var center_box := VBoxContainer.new()
+	center_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_box.add_theme_constant_override("separation", 0)
+	top.add_child(center_box)
+
 	_zone = _make_label("", 20, Color(1.0, 1.0, 1.0))
 	_zone.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	top.add_child(_zone)
+	center_box.add_child(_zone)
+
+	_clock = _make_label("", 14, Color(0.86, 0.90, 0.98, 0.85))
+	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	center_box.add_child(_clock)
 
 	_hint = _make_label("Tab — сумка    E — добыча    1/2 — инструмент    Esc — курсор, ещё раз — в меню", 14, Color(0.86, 0.90, 0.94))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -183,6 +193,9 @@ func _process(delta: float) -> void:
 	if _prompt != null:
 		_prompt.text = _prompt_text(player)
 
+	if _clock != null:
+		_clock.text = DayCycle.clock_text(DayCycle.progress_now())
+
 	if _toast_left > 0.0:
 		_toast_left -= delta
 		if _toast_left <= 0.0 and _toast != null:
@@ -204,6 +217,12 @@ func _network_text() -> String:
 func _prompt_text(player: Player) -> String:
 	if player == null:
 		return ""
+	var car := player.get_vehicle()
+	if car != null:
+		return "E — выйти из машины    %d км/ч    W/S газ и назад, A/D руль" % int(round(car.speed_kmh()))
+	var near := player.get_target_vehicle()
+	if near != null:
+		return "E — сесть за руль"
 	var target: ResourceNode = player.get_target()
 	if target == null:
 		return ""

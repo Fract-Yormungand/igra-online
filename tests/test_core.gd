@@ -12,6 +12,7 @@ func _initialize() -> void:
 	_test_rules()
 	_test_world_gen()
 	_test_zones()
+	_test_day_cycle()
 	print("---")
 	print("Проверок: %d, провалов: %d" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -157,6 +158,57 @@ func _test_world_gen() -> void:
 	_check(stone_in_quarry, "камень лежит у подножия горы")
 	_check(ids_unique.size() == first_resources.size(), "идентификаторы источников уникальны")
 	_check((first["spawn_points"] as Array).size() == WorldGen.SPAWN_POINTS, "точек появления столько, сколько задано")
+
+	var cars: Array = first["vehicles"]
+	_check(cars.size() == WorldGen.CAR_SPAWNS, "машин столько, сколько задано: %d" % cars.size())
+	var cars_ok := true
+	var car_ids := {}
+	for car in cars:
+		var spot: Vector3 = car["position"]
+		if absf(spot.x) > half or absf(spot.z) > half:
+			cars_ok = false
+		car_ids[int(car["id"])] = true
+	_check(cars_ok, "машины стоят внутри площадки")
+	_check(car_ids.size() == cars.size(), "у машин разные номера")
+	if cars.size() >= 2:
+		var gap: float = (cars[0]["position"] as Vector3).distance_to(cars[1]["position"])
+		_check(gap > 3.0, "машины не стоят друг в друге: %.1f м" % gap)
+
+func _test_day_cycle() -> void:
+	_check(is_equal_approx(DayCycle.progress_at(DayCycle.EPOCH_UNIX), 0.0), "в точке отсчёта полночь")
+	_check(is_equal_approx(DayCycle.progress_at(DayCycle.EPOCH_UNIX + DayCycle.FULL_DAY_SECONDS * 0.5), 0.5), "через полсуток полдень")
+	var wrapped := DayCycle.progress_at(DayCycle.EPOCH_UNIX + DayCycle.FULL_DAY_SECONDS * 1.25)
+	_check(is_equal_approx(wrapped, 0.25), "сутки замыкаются в круг")
+
+	_check(DayCycle.clock_text(0.0) == "00:00", "полночь на часах")
+	_check(DayCycle.clock_text(0.25) == "06:00", "шесть утра на часах")
+	_check(DayCycle.clock_text(0.5) == "12:00", "полдень на часах")
+	_check(DayCycle.clock_text(0.75) == "18:00", "восемнадцать на часах")
+
+	_check(DayCycle.is_night(0.0), "в полночь ночь")
+	_check(not DayCycle.is_night(0.5), "в полдень день")
+	_check(is_equal_approx(DayCycle.daylight(0.5), 1.0), "в полдень самый яркий день")
+	_check(is_equal_approx(DayCycle.daylight(0.0), 0.0), "в полночь дня нет")
+	_check(is_equal_approx(DayCycle.moonlight(0.0), 1.0), "в полночь луна светит в полную силу")
+	_check(DayCycle.sun_energy(0.5) > DayCycle.sun_energy(0.3), "солнце ярче к полудню")
+	_check(is_equal_approx(DayCycle.sun_energy(0.0), 0.0), "ночью солнце не светит")
+	_check(DayCycle.moon_energy(0.0) > 0.0, "ночью луна даёт свет")
+	_check(DayCycle.ambient_energy(0.0) < DayCycle.ambient_energy(0.5), "ночью общий свет слабее")
+	_check(DayCycle.twilight(0.25) > 0.9, "на восходе есть заря")
+	_check(is_equal_approx(DayCycle.twilight(0.5), 0.0), "в полдень зари нет")
+
+	var noon := DayCycle.sun_rotation_degrees(0.5)
+	_check(is_equal_approx(noon.x, -90.0), "в полдень солнце прямо над головой: %.1f" % noon.x)
+	# Угол может прийти как -270 градусов: это те же +90, свет снизу.
+	var moon_noon := wrapf(DayCycle.moon_rotation_degrees(0.5).x, -180.0, 180.0)
+	_check(moon_noon > 0.0, "в полдень луна под землёй: %.1f" % moon_noon)
+
+	_check(DayCycle.sky_top(0.0) != DayCycle.sky_top(0.5), "небо днём и ночью разного цвета")
+	# Теплее значит больше красного относительно синего, а не ярче.
+	var dawn := DayCycle.sky_horizon(0.25)
+	var noon_sky := DayCycle.sky_horizon(0.5)
+	_check((dawn.r - dawn.b) > (noon_sky.r - noon_sky.b), "на восходе горизонт теплее, чем в полдень")
+	_check(DayCycle.sky_top(0.0).get_luminance() < DayCycle.sky_top(0.5).get_luminance(), "ночное небо темнее дневного")
 
 func _test_zones() -> void:
 	_check(WorldGen.zone_at(WorldGen.MOUNTAIN_CENTER) == "Шахта", "центр горы это шахта")

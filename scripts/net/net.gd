@@ -9,6 +9,7 @@ signal status_changed(text: String)
 signal connection_ready()
 signal connection_lost(reason: String)
 signal player_transform(peer_id: int, position: Vector3, yaw: float)
+signal vehicle_transform(peer_id: int, vehicle_id: int, position: Vector3, rotation_y: float)
 
 const DEFAULT_PORT := 7777
 const MAX_CLIENTS := 7
@@ -100,6 +101,15 @@ func send_transform(position: Vector3, yaw: float) -> void:
 		return
 	_rpc_transform.rpc(my_id, position, yaw)
 
+## Машину двигает только её водитель, он и рассылает положение.
+func send_vehicle(vehicle_id: int, position: Vector3, rotation_y: float) -> void:
+	vehicle_transform.emit(my_id, vehicle_id, position, rotation_y)
+	if multiplayer.multiplayer_peer == null:
+		return
+	if multiplayer.get_peers().is_empty():
+		return
+	_rpc_vehicle.rpc(my_id, vehicle_id, position, rotation_y)
+
 func _broadcast_roster() -> void:
 	if not is_host:
 		return
@@ -131,6 +141,13 @@ func _rpc_transform(peer_id: int, position: Vector3, yaw: float) -> void:
 	if multiplayer.get_remote_sender_id() != peer_id:
 		return
 	player_transform.emit(peer_id, position, yaw)
+
+@rpc("any_peer", "call_remote", "unreliable_ordered")
+func _rpc_vehicle(peer_id: int, vehicle_id: int, position: Vector3, rotation_y: float) -> void:
+	# чужую машину от чужого имени не принимаем
+	if multiplayer.get_remote_sender_id() != peer_id:
+		return
+	vehicle_transform.emit(peer_id, vehicle_id, position, rotation_y)
 
 func _on_connected_to_server() -> void:
 	my_id = multiplayer.get_unique_id()

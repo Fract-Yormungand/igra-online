@@ -7,6 +7,7 @@ extends Node
 signal resources_changed()
 signal inventory_changed(peer_id: int)
 signal equipped_changed(peer_id: int)
+signal vehicles_changed()
 signal state_reset()
 signal notice(text: String)
 
@@ -15,7 +16,13 @@ signal notice(text: String)
 ## позиций не рождало ложных отказов.
 const MAX_HARVEST_DISTANCE := 5.5
 
+## Дистанция, с которой сервер разрешает сесть за руль. Чуть больше, чем у
+## добычи: машина большая, к ней подходят вплотную.
+const MAX_VEHICLE_DISTANCE := 6.5
+
 var resources: Dictionary = {}
+## Машины: id -> {driver, position, rotation}. Водителя назначает только сервер.
+var vehicles: Dictionary = {}
 var inventories: Dictionary = {}
 var equipped: Dictionary = {}
 var positions: Dictionary = {}
@@ -47,8 +54,15 @@ func my_inventory() -> Inventory:
 
 # --- мир -------------------------------------------------------------------
 
-## Заполняет состояние источников по списку из генератора мира.
-func setup_world(resource_list: Array) -> void:
+## Заполняет состояние источников и машин по списку из генератора мира.
+func setup_world(resource_list: Array, vehicle_list: Array = []) -> void:
+	vehicles.clear()
+	for entry in vehicle_list:
+		vehicles[int(entry.get("id", -1))] = {
+			"driver": 0,
+			"position": entry.get("position", Vector3.ZERO),
+			"rotation": float(entry.get("rot_y", 0.0)),
+		}
 	resources.clear()
 	for entry in resource_list:
 		var resource_type := String(entry.get("type", ""))
@@ -59,6 +73,7 @@ func setup_world(resource_list: Array) -> void:
 		resources[int(entry.get("id", -1))] = state
 	world_ready = true
 	resources_changed.emit()
+	vehicles_changed.emit()
 
 ## Возрождение истощённых источников. Крутится только на сервере.
 func _process(_delta: float) -> void:
@@ -98,6 +113,15 @@ func _on_roster_changed(players: Dictionary) -> void:
 		inventories.erase(key)
 		equipped.erase(key)
 		positions.erase(key)
+	# Ушедший игрок не должен держать машину занятой.
+	for key in vehicles:
+		var state: Dictionary = vehicles[key]
+		var driver := int(state.get("driver", 0))
+		if driver == 0 or players.has(driver):
+			continue
+		state["driver"] = 0
+		vehicles[key] = state
+		_sync_vehicle.rpc(int(key), 0, state.get("position", Vector3.ZERO), float(state.get("rotation", 0.0)))
 
 func _default_tool(inv: Inventory) -> String:
 	for item_id in ItemDB.HOTBAR:
@@ -138,7 +162,13 @@ func _request_state() -> void:
 	if not is_server():
 		return
 	var peer_id := multiplayer.get_remote_sender_id()
-	_receive_state.rpc_id(peer_id, resources.duplicate(true), _inventories_payload(), equipped.duplicate())
+	_receive_state.rpc_id(
+		peer_id,
+		resources.duplicate(true),
+		_inventories_payload(),
+		equipped.duplicate(),
+		vehicles.duplicate(true)
+	)
 
 func _inventories_payload() -> Dictionary:
 	var payload := {}
@@ -147,7 +177,12 @@ func _inventories_payload() -> Dictionary:
 	return payload
 
 @rpc("authority", "call_remote", "reliable")
-func _receive_state(resource_states: Dictionary, inv_payload: Dictionary, equipped_payload: Dictionary) -> void:
+func _receive_state(
+	resource_states: Dictionary,
+	inv_payload: Dictionary,
+	equipped_payload: Dictionary,
+	vehicle_states: Dictionary
+) -> void:
 	resources.clear()
 	for key in resource_states:
 		resources[int(key)] = resource_states[key]
@@ -157,7 +192,11 @@ func _receive_state(resource_states: Dictionary, inv_payload: Dictionary, equipp
 	equipped.clear()
 	for key in equipped_payload:
 		equipped[int(key)] = String(equipped_payload[key])
+	vehicles.clear()
+	for key in vehicle_states:
+		vehicles[int(key)] = vehicle_states[key]
 	state_reset.emit()
+	vehicles_changed.emit()
 	resources_changed.emit()
 
 # --- добыча ----------------------------------------------------------------
@@ -239,6 +278,82 @@ func _equip_on_server(peer_id: int, item_id: String) -> void:
 	if get_equipped(peer_id) == item_id:
 		return
 	_sync_equipped.rpc(peer_id, item_id)
+
+# --- машины ----------------------------------------------------------------
+
+func request_vehicle_enter(vehicle_id: int) -> void:
+	if is_server():
+		_vehicle_enter_on_server(Net.my_id, vehicle_id)
+	else:
+		_request_vehicle_enter.rpc_id(1, vehicle_id)
+
+func request_vehicle_exit() -> void:
+	if is_server():
+		_vehicle_exit_on_server(Net.my_id)
+	else:
+		_request_vehicle_exit.rpc_id(1)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_vehicle_enter(vehicle_id: int) -> void:
+	if not is_server():
+		return
+	_vehicle_enter_on_server(multiplayer.get_remote_sender_id(), vehicle_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_vehicle_exit() -> void:
+	if not is_server():
+		return
+	_vehicle_exit_on_server(multiplayer.get_remote_sender_id())
+
+func _vehicle_enter_on_server(peer_id: int, vehicle_id: int) -> void:
+	var state: Dictionary = vehicles.get(vehicle_id, {})
+	if state.is_empty():
+		_send_notice(peer_id, "Машина не найдена")
+		return
+	if int(state.get("driver", 0)) != 0:
+		_send_notice(peer_id, "Машина занята")
+		return
+	for key in vehicles:
+		if int(vehicles[key].get("driver", 0)) == peer_id:
+			_send_notice(peer_id, "Ты уже за рулём")
+			return
+	if positions.has(peer_id):
+		var spot: Vector3 = state.get("position", Vector3.ZERO)
+		if (Vector3(positions[peer_id]) - spot).length() > MAX_VEHICLE_DISTANCE:
+			_send_notice(peer_id, "Далеко от машины")
+			return
+	state["driver"] = peer_id
+	vehicles[vehicle_id] = state
+	print("[GAME] #%d сел в машину #%d" % [peer_id, vehicle_id])
+	_sync_vehicle.rpc(vehicle_id, peer_id, state.get("position", Vector3.ZERO), float(state.get("rotation", 0.0)))
+
+func _vehicle_exit_on_server(peer_id: int) -> void:
+	for key in vehicles:
+		var state: Dictionary = vehicles[key]
+		if int(state.get("driver", 0)) != peer_id:
+			continue
+		state["driver"] = 0
+		vehicles[key] = state
+		print("[GAME] #%d вышел из машины #%d" % [peer_id, key])
+		_sync_vehicle.rpc(int(key), 0, state.get("position", Vector3.ZERO), float(state.get("rotation", 0.0)))
+		return
+
+## Водитель прислал положение. Сервер запоминает его для проверки дистанции,
+## клиенты двигают узел. Слушаем только назначенного водителя.
+func note_vehicle_transform(vehicle_id: int, peer_id: int, position: Vector3, rotation_y: float) -> void:
+	var state: Dictionary = vehicles.get(vehicle_id, {})
+	if state.is_empty():
+		return
+	if int(state.get("driver", 0)) != peer_id:
+		return
+	state["position"] = position
+	state["rotation"] = rotation_y
+	vehicles[vehicle_id] = state
+
+@rpc("authority", "call_local", "reliable")
+func _sync_vehicle(vehicle_id: int, driver: int, position: Vector3, rotation_y: float) -> void:
+	vehicles[vehicle_id] = {"driver": driver, "position": position, "rotation": rotation_y}
+	vehicles_changed.emit()
 
 # --- синхронизация ---------------------------------------------------------
 
