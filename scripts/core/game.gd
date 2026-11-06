@@ -1,12 +1,13 @@
 extends Node
 
-## Авторитетное состояние мира: источники ресурсов, инвентари, что в руках.
-## Сервер считает и рассылает, клиенты только показывают и просят.
-## Все изменения идут через сеть, локальных правок состояния на клиенте нет.
+## Авторитетное состояние мира: источники ресурсов, инвентари, что в руках,
+## прочность инструментов. Сервер считает и рассылает, клиенты только
+## показывают и просят. Локальных правок состояния на клиенте нет.
 
 signal resources_changed()
 signal inventory_changed(peer_id: int)
 signal equipped_changed(peer_id: int)
+signal wear_changed(peer_id: int)
 signal vehicles_changed()
 signal state_reset()
 signal notice(text: String)
@@ -26,6 +27,9 @@ var vehicles: Dictionary = {}
 var inventories: Dictionary = {}
 var equipped: Dictionary = {}
 var positions: Dictionary = {}
+## Прочность: peer_id -> {item_id: остаток}. Живёт рядом с сумкой, потому что
+## изнашивается именно предмет в руке.
+var wear: Dictionary = {}
 
 var world_ready := false
 ## Флаг интерфейса: открыта сумка. Нужен игроку, чтобы не забирать мышь,
@@ -104,17 +108,21 @@ func _on_roster_changed(players: Dictionary) -> void:
 		var peer_id := int(key)
 		if inventories.has(peer_id):
 			continue
+		# Стартового снаряжения нет: первый инструмент игрок собирает сам.
 		var inv := Inventory.new(ItemDB.START_INVENTORY)
 		inventories[peer_id] = inv
 		equipped[peer_id] = _default_tool(inv)
+		wear[peer_id] = {}
 		_sync_inventory.rpc(peer_id, inv.to_dict())
 		_sync_equipped.rpc(peer_id, get_equipped(peer_id))
+		_sync_wear.rpc(peer_id, {})
 	for key in inventories.keys():
 		if players.has(int(key)):
 			continue
 		inventories.erase(key)
 		equipped.erase(key)
 		positions.erase(key)
+		wear.erase(key)
 	# Ушедший игрок не должен держать машину занятой.
 	for key in vehicles:
 		var state: Dictionary = vehicles[key]
@@ -125,10 +133,30 @@ func _on_roster_changed(players: Dictionary) -> void:
 		vehicles[key] = state
 		_sync_vehicle.rpc(int(key), 0, state.get("position", Vector3.ZERO), float(state.get("rotation", 0.0)))
 
+## Первый инструмент по порядку слотов: топор, кирка, копьё.
 func _default_tool(inv: Inventory) -> String:
-	for item_id in ItemDB.HOTBAR:
-		if inv.has(item_id):
-			return item_id
+	for entry in ItemDB.TOOL_SLOTS:
+		for item_id in entry.get("chain", []):
+			if inv.has(String(item_id)):
+				return String(item_id)
+	return ""
+
+## Лучший инструмент слота, который есть в сумке. Пустая строка, если нет.
+func _best_in_slot(peer_id: int, slot_key: String) -> String:
+	var inv: Inventory = inventories.get(peer_id, null)
+	if inv == null:
+		return ""
+	for item_id in ItemDB.tool_chain(slot_key):
+		if inv.has(String(item_id)):
+			return String(item_id)
+	return ""
+
+## Инструмент, который берём в руки после поломки: первый доступный.
+func _pick_after_break(peer_id: int) -> String:
+	for entry in ItemDB.TOOL_SLOTS:
+		var found := _best_in_slot(peer_id, String(entry.get("key", "")))
+		if not found.is_empty():
+			return found
 	return ""
 
 func _on_player_transform(peer_id: int, position: Vector3, _yaw: float) -> void:
@@ -169,6 +197,7 @@ func _request_state() -> void:
 		resources.duplicate(true),
 		_inventories_payload(),
 		equipped.duplicate(),
+		wear.duplicate(true),
 		vehicles.duplicate(true)
 	)
 
@@ -183,6 +212,7 @@ func _receive_state(
 	resource_states: Dictionary,
 	inv_payload: Dictionary,
 	equipped_payload: Dictionary,
+	wear_payload: Dictionary,
 	vehicle_states: Dictionary
 ) -> void:
 	resources.clear()
@@ -194,6 +224,9 @@ func _receive_state(
 	equipped.clear()
 	for key in equipped_payload:
 		equipped[int(key)] = String(equipped_payload[key])
+	wear.clear()
+	for key in wear_payload:
+		wear[int(key)] = wear_payload[key]
 	vehicles.clear()
 	for key in vehicle_states:
 		vehicles[int(key)] = vehicle_states[key]
@@ -216,14 +249,16 @@ func _request_harvest(resource_id: int) -> void:
 	_harvest_on_server(multiplayer.get_remote_sender_id(), resource_id)
 
 ## Один удар. Сервер проверяет расстояние, инструмент и состояние источника.
+## Палку и камень с земли берут руками, по дереву и руде бьют инструментом.
 func _harvest_on_server(peer_id: int, resource_id: int) -> void:
 	var state: Dictionary = resources.get(resource_id, {})
 	if state.is_empty():
 		_send_notice(peer_id, "Источник не найден")
 		return
+	var resource_type := String(state.get("type", ""))
 	var tool := ItemDB.tool_tag(get_equipped(peer_id))
-	if not Rules.can_harvest(String(state.get("type", "")), tool):
-		var need := Rules.required_tool(String(state.get("type", "")))
+	if not Rules.can_harvest(resource_type, tool):
+		var need := Rules.required_tool(resource_type)
 		_send_notice(peer_id, "Нужен инструмент: %s" % ItemDB.display_name(need))
 		return
 	if positions.has(peer_id):
@@ -238,13 +273,16 @@ func _harvest_on_server(peer_id: int, resource_id: int) -> void:
 		return
 	var new_state: Dictionary = outcome["node_state"]
 	if not bool(new_state.get("alive", true)):
-		var respawn := float(Rules.spec(String(new_state.get("type", ""))).get("respawn_seconds", 30.0))
+		var respawn := float(Rules.spec(resource_type).get("respawn_seconds", 30.0))
 		new_state["respawn_at"] = now_seconds() + respawn
 	print("[GAME] #%d добыл %s из источника #%d" % [
 		peer_id, String(outcome.get("item", "")), resource_id
 	])
 	_sync_resource.rpc(resource_id, new_state)
 	give_item(peer_id, String(outcome.get("item", "")), int(outcome.get("count", 1)))
+	# Инструмент изнашивается от любой добычи, кроме подбора руками.
+	if not tool.is_empty():
+		spend_tool(peer_id)
 
 ## Выдать предмет в сумку. Возвращает false, если места нет: крафту это
 ## нужно, чтобы вернуть материалы, а не потерять их.
@@ -258,6 +296,9 @@ func give_item(peer_id: int, item_id: String, amount: int) -> bool:
 		_send_notice(peer_id, "Сумка полна: %s" % ItemDB.display_name(item_id))
 		return false
 	_sync_inventory.rpc(peer_id, inv.to_dict())
+	# Скрафченный или подобранный инструмент сам идёт в руки, если руки пусты.
+	if get_equipped(peer_id).is_empty() and ItemDB.is_equippable(item_id):
+		_equip_on_server(peer_id, item_id)
 	return true
 
 ## Разослать сумку игрока всем. Нужно механикам, которые меняют сумку сами:
@@ -282,15 +323,96 @@ func _request_equip(item_id: String) -> void:
 		return
 	_equip_on_server(multiplayer.get_remote_sender_id(), item_id)
 
+## Клавиша слота: берём лучший инструмент цепочки, который есть в сумке.
+func request_tool(slot_key: String) -> void:
+	if is_server():
+		_equip_best_on_server(Net.my_id, slot_key)
+		return
+	_request_tool.rpc_id(1, slot_key)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_tool(slot_key: String) -> void:
+	if not is_server():
+		return
+	_equip_best_on_server(multiplayer.get_remote_sender_id(), slot_key)
+
+func _equip_best_on_server(peer_id: int, slot_key: String) -> void:
+	var best := _best_in_slot(peer_id, slot_key)
+	if best.is_empty():
+		_send_notice(peer_id, "Нет в сумке: %s" % ItemDB.tool_label(slot_key))
+		return
+	_equip_on_server(peer_id, best)
+
 func _equip_on_server(peer_id: int, item_id: String) -> void:
 	if not ItemDB.is_equippable(item_id):
 		return
 	var inv: Inventory = inventories.get(peer_id, null)
 	if inv == null or not inv.has(item_id):
 		return
+	tool_left(peer_id, item_id)
 	if get_equipped(peer_id) == item_id:
 		return
 	_sync_equipped.rpc(peer_id, item_id)
+
+# --- прочность -------------------------------------------------------------
+
+## Остаток прочности предмета. Первое обращение заводит полный запас.
+func tool_left(peer_id: int, item_id: String) -> int:
+	var data: Dictionary = wear.get(peer_id, {})
+	if data.has(item_id):
+		return int(data[item_id])
+	if not Wear.is_breakable(item_id):
+		return 0
+	var fresh := Wear.fresh(item_id)
+	data[item_id] = fresh
+	wear[peer_id] = data
+	return fresh
+
+## Чистое чтение остатка: окно не должно заводить записи. Для вечного
+## предмета возвращает ноль.
+func wear_left(peer_id: int, item_id: String) -> int:
+	if not Wear.is_breakable(item_id):
+		return 0
+	var data: Dictionary = wear.get(peer_id, {})
+	return int(data.get(item_id, Wear.fresh(item_id)))
+
+## Один расход прочности за удар. Возвращает true, если предмет сломался.
+func spend_tool(peer_id: int) -> bool:
+	var item_id := get_equipped(peer_id)
+	if item_id.is_empty() or not Wear.is_breakable(item_id):
+		return false
+	var left := Wear.spend(tool_left(peer_id, item_id))
+	var data: Dictionary = wear.get(peer_id, {})
+	data[item_id] = left
+	wear[peer_id] = data
+	if not Wear.is_broken(left):
+		_broadcast_wear(peer_id)
+		return false
+
+	var inv: Inventory = inventories.get(peer_id, null)
+	if inv != null:
+		inv.remove(item_id, 1)
+		push_inventory(peer_id)
+	_sync_equipped.rpc(peer_id, _pick_after_break(peer_id))
+	_broadcast_wear(peer_id)
+	notify_peer(peer_id, "%s сломался" % ItemDB.display_name(item_id))
+	print("[GAME] #%d сломал %s" % [peer_id, item_id])
+	return true
+
+func _broadcast_wear(peer_id: int) -> void:
+	var data: Dictionary = wear.get(peer_id, {})
+	_apply_wear(peer_id, data)
+	if Net.is_offline():
+		return
+	_sync_wear.rpc(peer_id, data)
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_wear(peer_id: int, data: Dictionary) -> void:
+	_apply_wear(peer_id, data)
+
+func _apply_wear(peer_id: int, data: Dictionary) -> void:
+	wear[peer_id] = data.duplicate(true)
+	wear_changed.emit(peer_id)
 
 # --- машины ----------------------------------------------------------------
 

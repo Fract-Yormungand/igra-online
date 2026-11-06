@@ -36,19 +36,24 @@ const NAMES := {
 }
 
 ## Всё поведение в числах. Меняется здесь и только здесь.
+## Сила, магия и ловкость нужны не для боя, а для награды за убийство:
+## опыт считается по калькулятору из суммы характеристик моба.
 const SPECS := {
 	"boar": {
-		"hp": 40.0, "body": 6.0, "respawn": 30.0, "activate": 30.0,
+		"hp": 40.0, "body": 6.0, "strength": 6.0, "magic": 0.0, "agility": 4.0,
+		"respawn": 30.0, "activate": 30.0,
 		"speed": 1.6, "flee_speed": 9.0, "flee_time": 10.0, "push_force": 16.0,
 	},
 	"slime": {
-		"hp": 22.0, "body": 4.0, "respawn": 20.0, "activate": 24.0,
+		"hp": 22.0, "body": 4.0, "strength": 0.0, "magic": 4.0, "agility": 6.0,
+		"respawn": 20.0, "activate": 24.0,
 		"damage": 5.0, "attack_interval": 3.0, "leap_range": 8.0,
 		"leap_speed": 9.0, "leap_time": 0.45, "attach_range": 1.6,
 		"detach_range": 2.8, "pause_time": 2.0,
 	},
 	"spider": {
-		"hp": 60.0, "body": 10.0, "respawn": 60.0, "activate": 26.0,
+		"hp": 60.0, "body": 10.0, "strength": 8.0, "magic": 0.0, "agility": 10.0,
+		"respawn": 60.0, "activate": 26.0,
 		"damage": 8.0, "attack_interval": 3.0, "speed": 3.2,
 		"melee_range": 2.6, "web_interval": 10.0, "web_range": 9.0, "slow_time": 2.0,
 	},
@@ -337,6 +342,8 @@ func _attack_on_server(peer_id: int, mob_id: int) -> void:
 	print("[MOBS] #%d ударил %s #%d на %.1f, осталось %.1f" % [
 		peer_id, String(NAMES.get(String(state["type"]), "моб")), mob_id, dealt, float(state["hp"])
 	])
+	# Каждый удар изнашивает инструмент в руке, даже если моб умер.
+	Game.spend_tool(peer_id)
 
 	if float(state["hp"]) <= 0.0:
 		_kill(state, peer_id)
@@ -366,9 +373,32 @@ func _kill(state: Dictionary, hunter: int) -> void:
 	var node = _nodes.get(mob_id, null)
 	if node != null:
 		node.visible = false
+	var reward := reward_for(String(state["type"]))
+	var mob_name := String(NAMES.get(String(state["type"]), "Моб"))
 	if hunter != 0:
-		Game.notify_peer(hunter, "%s сбит" % String(NAMES.get(String(state["type"]), "Моб")))
-	print("[MOBS] %s #%d сбит игроком #%d" % [String(state["type"]), mob_id, hunter])
+		_grant_exp(hunter, reward)
+		Game.notify_peer(hunter, "%s сбит: +%d опыта" % [mob_name, reward])
+	print("[MOBS] %s #%d сбит игроком #%d, награда %d" % [String(state["type"]), mob_id, hunter, reward])
+
+## Опыт за убийство по калькулятору: сумма характеристик моба, делённая на
+## пять. Считается от данных вида, а не от текущего здоровья.
+func reward_for(mob_type: String) -> int:
+	var spec := _spec(mob_type)
+	return LevelRules.exp_reward(
+		float(spec.get("hp", 0.0)),
+		float(spec.get("strength", 0.0)),
+		float(spec.get("magic", 0.0)),
+		float(spec.get("body", 0.0)),
+		float(spec.get("agility", 0.0))
+	)
+
+## Опыт получает тот, кто добил: у наезда это водитель, у удара бьющий.
+func _grant_exp(peer_id: int, amount: int) -> void:
+	if amount <= 0:
+		return
+	var stats := _stats()
+	if stats != null:
+		stats.add_exp(peer_id, amount)
 
 func _respawn(state: Dictionary) -> void:
 	var mob_id := int(state["id"])

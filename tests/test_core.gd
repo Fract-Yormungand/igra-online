@@ -18,6 +18,9 @@ func _initialize() -> void:
 	_test_mobs()
 	_test_crafting()
 	_test_ram()
+	_test_wear()
+	_test_pickups()
+	_test_levels()
 	_test_feature_flags()
 	print("---")
 	print("Проверок: %d, провалов: %d" % [_checks, _failures])
@@ -39,19 +42,33 @@ func _test_item_db() -> void:
 	_check(ItemDB.tool_tag("axe") == "axe", "тег топора")
 	_check(ItemDB.tool_tag("pickaxe") == "pickaxe", "тег кирки")
 	_check(ItemDB.tool_tag("wood").is_empty(), "у материала нет тега инструмента")
-	for item_id in ItemDB.START_INVENTORY:
-		_check(ItemDB.exists(String(item_id)), "стартовый предмет %s описан" % item_id)
-	for item_id in ItemDB.HOTBAR:
-		_check(ItemDB.is_equippable(String(item_id)), "в панели быстрого доступа только то, что берут в руку")
+	_check(ItemDB.START_INVENTORY.is_empty(), "стартового снаряжения нет")
+	_check(ItemDB.exists("stick"), "палка есть в справочнике")
+	for entry in ItemDB.TOOL_SLOTS:
+		var slot_key := String(entry["key"])
+		for item_id in entry["chain"]:
+			_check(ItemDB.is_equippable(String(item_id)), "в слоте %s лежит предмет в руку" % slot_key)
+			_check(ItemDB.exists(String(item_id)), "предмет слота %s описан" % slot_key)
 	_check(ItemDB.is_equippable("spear"), "копьё берут в руку")
 	_check(not ItemDB.is_equippable("wood"), "дерево в руку не берут")
+	_check(not ItemDB.is_equippable("stick"), "палку в руку не берут")
 	_check(ItemDB.attack_multiplier("spear") > 1.0, "копьё усиливает удар: %.2f" % ItemDB.attack_multiplier("spear"))
 	_check(is_equal_approx(ItemDB.attack_multiplier("axe"), 1.0), "инструмент бьёт как кулак")
 
+	# Примитивные инструменты: слабее и живут мало, иначе нормальные не нужны.
+	_check(ItemDB.tool_tag("primitive_axe") == "axe", "примитивный топор рубит как топор")
+	_check(ItemDB.tool_tag("primitive_pickaxe") == "pickaxe", "примитивная кирка бьёт камень")
+	_check(ItemDB.attack_multiplier("primitive_axe") < ItemDB.attack_multiplier("axe"), "примитивный топор бьёт слабее")
+	_check(ItemDB.attack_multiplier("primitive_spear") < ItemDB.attack_multiplier("spear"), "примитивное копьё слабее")
+	_check(ItemDB.uses("primitive_axe") > 0 and ItemDB.uses("primitive_axe") < ItemDB.uses("axe"), "примитивный топор изнашивается быстрее: %d против %d" % [ItemDB.uses("primitive_axe"), ItemDB.uses("axe")])
+	_check(ItemDB.uses("wood") == 0, "у материала прочности нет")
+
 func _test_inventory() -> void:
 	var inv := Inventory.new(ItemDB.START_INVENTORY)
-	_check(inv.count("axe") == 1, "топор в стартовой сумке")
-	_check(inv.count("wood") == 0, "дерева в стартовой сумке нет")
+	_check(inv.is_empty(), "сумка нового игрока пуста")
+	_check(inv.add("axe", 1), "топор кладётся в пустую сумку")
+	_check(inv.count("axe") == 1, "топор в сумке")
+	_check(inv.count("wood") == 0, "дерева в сумке нет")
 	_check(inv.add("wood", 3), "дерево кладётся")
 	_check(inv.count("wood") == 3, "дерево посчитано")
 	_check(inv.has("wood", 3), "проверка количества")
@@ -95,6 +112,20 @@ func _test_rules() -> void:
 	_check(Rules.can_harvest(Rules.RESOURCE_ORE, "pickaxe"), "киркой по руде можно")
 	_check(not Rules.can_harvest(Rules.RESOURCE_ORE, ""), "без инструмента нельзя")
 	_check(not Rules.can_harvest("gold", "pickaxe"), "неизвестный источник нельзя")
+
+	# Палки и камни с земли берут руками: с них начинается крафт.
+	_check(Rules.is_known(Rules.RESOURCE_STICK), "палка известна правилам")
+	_check(Rules.is_hand_pickup(Rules.RESOURCE_STICK), "палку берут руками")
+	_check(Rules.is_hand_pickup(Rules.RESOURCE_PEBBLE), "камень с земли тоже")
+	_check(Rules.can_harvest(Rules.RESOURCE_STICK, ""), "без инструмента палку взять можно")
+	_check(not Rules.is_hand_pickup(Rules.RESOURCE_TREE), "дерево руками не берут")
+	var stick_state := Rules.new_state(Rules.RESOURCE_STICK)
+	var stick_hit := Rules.apply_hit(stick_state, "")
+	_check(bool(stick_hit["ok"]), "палка подбирается пустыми руками")
+	_check(String(stick_hit["item"]) == "stick", "с земли падает палка")
+	_check(not bool(Rules.apply_hit(Rules.new_state(Rules.RESOURCE_TREE), "")["ok"]), "дерево руками не взять")
+	var pebble_hit := Rules.apply_hit(Rules.new_state(Rules.RESOURCE_PEBBLE), "")
+	_check(String(pebble_hit["item"]) == "stone", "с земли поднимается камень")
 
 	var state := Rules.new_state(Rules.RESOURCE_TREE)
 	_check(int(state["hits"]) == 3, "у дерева три удара")
@@ -426,6 +457,12 @@ func _test_crafting() -> void:
 
 	var inv := Inventory.new({"wood": 3, "stone": 2})
 	_check(Recipes.can_craft("spear", inv), "рецепт читает сумку, а не словарь")
+
+	# Примитивные инструменты: вход в игру, когда стартового снаряжения нет.
+	_check(Recipes.exists("primitive_axe"), "рецепт примитивного топора есть")
+	_check(Recipes.can_craft("primitive_axe", {"stick": 2, "stone": 2}), "из двух палок и двух камней топор выходит")
+	_check(not Recipes.can_craft("primitive_axe", {"stick": 1, "stone": 2}), "одной палки мало")
+	_check(ItemDB.exists(Recipes.output_item("primitive_axe")), "примитивный топор описан в справочнике")
 	_check(ResourceLoader.exists("res://scripts/mechanics/crafting/crafting_mechanic.gd"), "файл механики крафта на месте")
 	_check(ResourceLoader.exists("res://scripts/mechanics/crafting/craft_panel.gd"), "вкладка крафта на месте")
 
@@ -450,6 +487,93 @@ func _test_ram() -> void:
 	_check(RamRules.knock_speed(15.0) > RamRules.knock_speed(4.0), "от быстрой машины отлетает дальше")
 	_check(RamRules.knock_speed(0.0) > 0.0, "отброс есть даже без скорости")
 	_check(RamRules.HIT_RADIUS > 2.0, "корпус задевает не только точку")
+
+## Прочность: удар снимает единицу, на нуле предмет сломан.
+func _test_wear() -> void:
+	_check(Wear.is_breakable("axe"), "топор изнашивается")
+	_check(Wear.is_breakable("primitive_axe"), "примитивный топор тоже")
+	_check(not Wear.is_breakable("wood"), "материал не изнашивается")
+	var fresh := Wear.fresh("primitive_axe")
+	_check(fresh == Wear.max_uses("primitive_axe"), "новый инструмент приходит с полным запасом")
+	_check(Wear.spend(fresh) == fresh - 1, "удар снимает единицу прочности")
+	var zero := 0
+	for i in Wear.max_uses("primitive_axe") + 5:
+		zero = Wear.spend(zero)
+	_check(zero == 0 and Wear.is_broken(zero), "ниже нуля прочность не уходит")
+	_check(is_equal_approx(Wear.share(5, 10), 0.5), "доля остатка считается")
+	_check(is_equal_approx(Wear.share(0, 10), 0.0), "пустой запас это ноль")
+	_check(is_equal_approx(Wear.share(3, 0), 1.0), "у вечного предмета полная доля")
+	_check(Wear.text(5, 10) == "5/10", "подпись прочности для окна")
+	_check(Wear.text(5, 0) == "", "у вечного предмета подписи нет")
+
+## Палки и камни на земле: их хватает на первый инструмент, лежат у лагеря.
+func _test_pickups() -> void:
+	var data := WorldGen.build()
+	var sticks := 0
+	var pebbles := 0
+	var inside := true
+	var near_camp := true
+	var half := float(data["platform_size"]) * 0.5
+	var camp := Vector3(WorldGen.SPAWN_CENTER.x, 0.0, WorldGen.SPAWN_CENTER.z)
+	var ids := {}
+	for entry in data["resources"]:
+		ids[int(entry["id"])] = true
+		var kind := String(entry["type"])
+		if kind != Rules.RESOURCE_STICK and kind != Rules.RESOURCE_PEBBLE:
+			continue
+		if kind == Rules.RESOURCE_STICK:
+			sticks += 1
+		else:
+			pebbles += 1
+		var spot: Vector3 = entry["position"]
+		if absf(spot.x) > half or absf(spot.z) > half:
+			inside = false
+		if Vector3(spot.x, 0.0, spot.z).distance_to(camp) > 30.0:
+			near_camp = false
+	_check(sticks > 5, "палок на земле хватает: %d" % sticks)
+	_check(pebbles > 5, "камней на земле хватает: %d" % pebbles)
+	_check(inside, "палки и камни внутри площадки")
+	_check(near_camp, "палки и камни лежат у лагеря")
+	_check(ids.size() == (data["resources"] as Array).size(), "у палок и камней свои номера")
+	_check(Recipes.can_craft("primitive_axe", {"stick": 2, "stone": 2}), "с земли выходит первый топор")
+
+## Прокачка: кап, цена шага, пул очков и награда за убийство по калькулятору.
+func _test_levels() -> void:
+	_check(LevelRules.level_cap(0) == 10, "на первой эволюции кап 10")
+	_check(LevelRules.level_cap(1) == 20, "на второй 20")
+	_check(LevelRules.level_cap(3) == 40, "на четвёртой 40")
+	_check(LevelRules.base_exp(0) == 10, "база опыта эво 0 равна 10")
+	_check(LevelRules.base_exp(1) == 20, "база эво 1 равна 20")
+	_check(LevelRules.base_exp(2) == 40, "база эво 2 равна 40")
+	_check(LevelRules.base_exp(3) == 70, "база эво 3 равна 70")
+	_check(LevelRules.base_exp(4) == 110, "база эво 4 равна 110")
+	_check(LevelRules.exp_to_next(0, 0) == 10, "шаг с нулевого уровня 10")
+	_check(LevelRules.exp_to_next(0, 5) == 15, "на пятом уровне 15")
+	_check(LevelRules.exp_to_next(2, 0) == 40, "на эво 2 шаг начинается с 40")
+	_check(LevelRules.total_points(0, 0) == 0, "на старте очков нет")
+	_check(LevelRules.total_points(0, 10) == 10, "десятый уровень даёт десять очков")
+	_check(LevelRules.total_points(1, 0) == 10, "эволюция без уровня тоже десять")
+	_check(LevelRules.total_points(2, 0) == 40, "с второй эволюции идёт десятка сверху")
+
+	# Награда за убийство: сумма характеристик моба на пятёрку, минимум единица.
+	_check(LevelRules.exp_reward(40.0, 6.0, 0.0, 6.0, 4.0) == 11, "кабан даёт 11 опыта")
+	_check(LevelRules.exp_reward(22.0, 0.0, 4.0, 4.0, 6.0) == 7, "слайм даёт 7 опыта")
+	_check(LevelRules.exp_reward(60.0, 8.0, 0.0, 10.0, 10.0) == 17, "паук даёт 17 опыта")
+	_check(LevelRules.exp_reward(0.0, 0.0, 0.0, 0.0, 0.0) == 1, "даже пустой моб даёт единицу")
+	_check(LevelRules.exp_reward(50.0, 10.0, 20.0, 5.0, 5.0) > LevelRules.exp_reward(50.0, 10.0, 0.0, 5.0, 5.0), "магия в награду тоже входит")
+
+	var step := LevelRules.add_exp(0, 0, 0, 10)
+	_check(int(step["level"]) == 1 and int(step["exp"]) == 0, "десяток опыта это первый уровень")
+	_check(int(step["levels_gained"]) == 1 and int(step["evolved"]) == 0, "уровень вырос без эволюции")
+	var half := LevelRules.add_exp(0, 0, 0, 5)
+	_check(int(half["level"]) == 0 and int(half["exp"]) == 5, "половина шага копится")
+	var cap := LevelRules.add_exp(0, 9, 0, LevelRules.exp_to_next(0, 9))
+	_check(int(cap["level"]) == 0 and int(cap["evolution"]) == 1, "на капе идёт эволюция")
+	_check(int(cap["exp"]) == 0, "эволюция обнуляет опыт")
+	var many := LevelRules.add_exp(0, 0, 0, 1000)
+	_check(int(many["levels_gained"]) >= 10, "большой опыт поднимает уровни подряд: %d" % int(many["levels_gained"]))
+	_check(int(many["evolution"]) >= 1, "и упирается в эволюцию")
+	_check(LevelRules.add_exp(0, 0, 0, 0)["level"] == 0, "нулевой опыт ничего не меняет")
 
 func _test_feature_flags() -> void:
 	var defaults := {"harvest": true, "stats": true}

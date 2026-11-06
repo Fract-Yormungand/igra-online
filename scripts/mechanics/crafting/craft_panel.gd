@@ -81,7 +81,7 @@ func _build_row(recipe_id: String) -> Control:
 func _status_text(busy: String) -> String:
 	if not busy.is_empty():
 		return "В работе: %s" % Recipes.display_name(busy)
-	return "Дерево даёт топор, камень и металл добывает кирка"
+	return "Палки и камни лежат у лагеря: с них начинается первый инструмент"
 
 func _busy_recipe() -> String:
 	var crafting := _crafting()

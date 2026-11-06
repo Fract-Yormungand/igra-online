@@ -48,6 +48,53 @@ func _build_visual() -> void:
 		_:
 			_build_stone()
 
+## Палка лежит на земле: тонкий цилиндр, чуть повёрнутый.
+func _build_stick() -> void:
+	var stick := MeshInstance3D.new()
+	var stick_mesh := CylinderMesh.new()
+	stick_mesh.top_radius = 0.045
+	stick_mesh.bottom_radius = 0.06
+	stick_mesh.height = 0.95
+	stick_mesh.radial_segments = 6
+	stick.mesh = stick_mesh
+	stick.position = Vector3(0.0, 0.07, 0.0)
+	stick.rotation = Vector3(0.0, 0.0, PI * 0.5)
+	stick.material_override = _material(Color(0.46, 0.32, 0.17))
+	_visual.add_child(stick)
+
+	var knot := MeshInstance3D.new()
+	var knot_mesh := BoxMesh.new()
+	knot_mesh.size = Vector3(0.09, 0.09, 0.09)
+	knot.mesh = knot_mesh
+	knot.position = Vector3(0.28, 0.08, 0.05)
+	knot.rotation = Vector3(0.2, 0.5, 0.0)
+	knot.material_override = _material(Color(0.38, 0.26, 0.14))
+	_visual.add_child(knot)
+
+	_add_collision(_box(Vector3(1.0, 0.25, 0.35)), Vector3(0.0, 0.1, 0.0))
+
+## Камень на земле: два небольших обломка, чтобы читался издалека.
+func _build_pebble() -> void:
+	var rock := MeshInstance3D.new()
+	var rock_mesh := BoxMesh.new()
+	rock_mesh.size = Vector3(0.42, 0.3, 0.36)
+	rock.mesh = rock_mesh
+	rock.position = Vector3(0.0, 0.15, 0.0)
+	rock.rotation = Vector3(0.1, 0.5, 0.05)
+	rock.material_override = _material(Color(0.54, 0.55, 0.57))
+	_visual.add_child(rock)
+
+	var chip := MeshInstance3D.new()
+	var chip_mesh := BoxMesh.new()
+	chip_mesh.size = Vector3(0.2, 0.14, 0.18)
+	chip.mesh = chip_mesh
+	chip.position = Vector3(0.32, 0.07, 0.18)
+	chip.rotation = Vector3(0.0, 0.9, 0.2)
+	chip.material_override = _material(Color(0.47, 0.48, 0.50))
+	_visual.add_child(chip)
+
+	_add_collision(_box(Vector3(0.6, 0.3, 0.5)), Vector3(0.0, 0.15, 0.0))
+
 func _build_tree() -> void:
 	var trunk := MeshInstance3D.new()
 	var trunk_mesh := CylinderMesh.new()

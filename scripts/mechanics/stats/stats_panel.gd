@@ -1,8 +1,11 @@
 extends Control
 
-## Окно статуса: здоровье, запас сил, характеристики и то, что из них выходит.
-## Данные берёт у механики stats, сама ничего не считает. Нет механики, окно
-## просто показывает прочерки и не ломает остальной интерфейс.
+## Окно статуса: здоровье, запас сил, характеристики, прокачка и то, что из
+## них выходит. Данные берёт у механики stats, сама ничего не считает.
+## Нет механики, окно просто показывает прочерки и не ломает интерфейс.
+##
+## Свободные очки игрок раскладывает кнопками «+»: просьба уходит на сервер,
+## он проверяет пул и меняет характеристики.
 
 const REFRESH_INTERVAL := 0.2
 const UNKNOWN := "—"
@@ -11,7 +14,10 @@ var _hp_bar: ProgressBar
 var _mp_bar: ProgressBar
 var _hp_text: Label
 var _mp_text: Label
+var _level_label: Label
+var _points_label: Label
 var _attribute_values: Dictionary = {}
+var _attribute_buttons: Dictionary = {}
 var _derived_label: Label
 var _refresh_left := 0.0
 
@@ -50,9 +56,23 @@ func refresh() -> void:
 	_hp_text.text = "%d / %d" % [int(round(hp)), int(round(max_hp))]
 	_mp_text.text = "%d / %d" % [int(round(mp)), int(round(max_mp))]
 
+	var progress: Dictionary = stats.progress(peer_id)
+	var free_points := int(progress.get("points", 0))
+	_level_label.text = "Уровень %d из %d • опыт %d/%d • эволюция %d" % [
+		int(progress.get("level", 0)),
+		int(progress.get("cap", 0)),
+		int(progress.get("exp", 0)),
+		int(progress.get("exp_next", 1)),
+		int(progress.get("evolution", 0)),
+	]
+	_points_label.text = "Свободных очков: %d" % free_points
+
 	for key in _attribute_values:
 		var label: Label = _attribute_values[key]
 		label.text = str(int(attrs.get(key, 0)))
+		var button: Button = _attribute_buttons.get(key, null)
+		if button != null:
+			button.disabled = free_points <= 0
 
 	var derived: Dictionary = stats.derived(peer_id)
 	var best: Dictionary = derived.get("magic_best", {})
@@ -75,9 +95,14 @@ func _set_unavailable() -> void:
 	_mp_bar.value = 0.0
 	_hp_text.text = UNKNOWN
 	_mp_text.text = UNKNOWN
+	_level_label.text = UNKNOWN
+	_points_label.text = ""
 	for key in _attribute_values:
 		var label: Label = _attribute_values[key]
 		label.text = UNKNOWN
+		var button: Button = _attribute_buttons.get(key, null)
+		if button != null:
+			button.disabled = true
 	_derived_label.text = "Механика характеристик выключена"
 
 # --- построение ------------------------------------------------------------
@@ -89,8 +114,9 @@ func _build() -> void:
 	add_child(center)
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(460.0, 0.0)
-	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.custom_minimum_size = Vector2(470.0, 0.0)
+	# Кнопки очков должны ловить мышь, иначе окно только для чтения.
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	panel.add_theme_stylebox_override("panel", _panel_style())
 	center.add_child(panel)
 
@@ -115,11 +141,17 @@ func _build() -> void:
 	_mp_text = mp_row["value"]
 	column.add_child(mp_row["row"])
 
+	column.add_child(_label("Прокачка", 18, Color(0.86, 0.92, 1.0)))
+	_level_label = _label(UNKNOWN, 15, Color(0.94, 0.90, 0.78))
+	column.add_child(_level_label)
+	_points_label = _label("", 15, Color(1.0, 0.86, 0.55))
+	column.add_child(_points_label)
+
 	column.add_child(_label("Характеристики", 18, Color(0.86, 0.92, 1.0)))
 
 	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 24)
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 14)
 	grid.add_theme_constant_override("v_separation", 4)
 	column.add_child(grid)
 	for key in DerivedStats.ATTRIBUTE_KEYS:
@@ -127,12 +159,31 @@ func _build() -> void:
 		var value := _label(UNKNOWN, 16, Color(1.0, 1.0, 1.0))
 		grid.add_child(value)
 		_attribute_values[key] = value
+		var button := _point_button(String(key))
+		grid.add_child(button)
+		_attribute_buttons[key] = button
 
 	column.add_child(_label("Что из этого выходит", 18, Color(0.86, 0.92, 1.0)))
 	_derived_label = _label(UNKNOWN, 15, Color(0.86, 0.90, 0.96))
 	column.add_child(_derived_label)
 
 	column.add_child(_label("C или Esc — закрыть", 13, Color(0.72, 0.78, 0.84)))
+
+func _point_button(attribute: String) -> Button:
+	var button := Button.new()
+	button.text = "+1"
+	button.focus_mode = Control.FOCUS_NONE
+	button.custom_minimum_size = Vector2(46.0, 0.0)
+	button.add_theme_font_size_override("font_size", 14)
+	button.pressed.connect(_on_point_pressed.bind(attribute))
+	return button
+
+func _on_point_pressed(attribute: String) -> void:
+	var stats := Features.mechanic("stats")
+	if stats == null or not stats.has_method("request_spend_point"):
+		return
+	stats.request_spend_point(attribute)
+	refresh()
 
 func _bar_row(title: String, color: Color) -> Dictionary:
 	var row := HBoxContainer.new()

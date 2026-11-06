@@ -26,8 +26,10 @@ var _hotbar_slots: Dictionary = {}
 
 var _hp_bar: ProgressBar
 var _mp_bar: ProgressBar
+var _xp_bar: ProgressBar
 var _hp_text: Label
 var _mp_text: Label
+var _level_text: Label
 var _stats_panel: Control
 var _bars_left := 0.0
 
@@ -38,6 +40,7 @@ func setup(world: Node) -> void:
 	_build()
 	Game.inventory_changed.connect(_on_inventory_changed)
 	Game.equipped_changed.connect(_on_equipped_changed)
+	Game.wear_changed.connect(_on_wear_changed)
 	Game.state_reset.connect(refresh_all)
 	Game.notice.connect(show_notice)
 	Net.roster_changed.connect(_on_roster_changed)
@@ -91,6 +94,12 @@ func _build() -> void:
 	_mp_text = _make_label("", 13, Color(0.88, 0.92, 1.0))
 	bars.add_child(_mp_text)
 
+	# Уровень и опыт: прокачка растёт с каждого сбитого моба.
+	_level_text = _make_label("", 13, Color(1.0, 0.94, 0.72))
+	bars.add_child(_level_text)
+	_xp_bar = _make_bar(Color(0.86, 0.72, 0.30), 110.0)
+	bars.add_child(_xp_bar)
+
 	var center_box := VBoxContainer.new()
 	center_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	center_box.add_theme_constant_override("separation", 0)
@@ -130,12 +139,13 @@ func _build() -> void:
 	hotbar.add_theme_constant_override("separation", 8)
 	hotbar_wrap.add_child(hotbar)
 
-	for i in ItemDB.HOTBAR.size():
-		var item_id := String(ItemDB.HOTBAR[i])
-		var slot := _make_label("%d  %s" % [i + 1, ItemDB.display_name(item_id)], 16, Color(1, 1, 1))
+	for i in ItemDB.TOOL_SLOTS.size():
+		var entry: Dictionary = ItemDB.TOOL_SLOTS[i]
+		var slot_key := String(entry.get("key", ""))
+		var slot := _make_label("%d  %s" % [i + 1, String(entry.get("label", slot_key))], 16, Color(1, 1, 1))
 		slot.add_theme_stylebox_override("normal", _slot_style(false))
 		hotbar.add_child(slot)
-		_hotbar_slots[item_id] = slot
+		_hotbar_slots[slot_key] = slot
 
 	var crosshair := _make_label("+", 22, Color(1.0, 1.0, 1.0, 0.75))
 	crosshair.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -306,7 +316,15 @@ func _make_slot(entry: Dictionary) -> Control:
 	item_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(item_name)
 
-	var count := _make_label("%d" % int(entry.get("count", 0)), 16, Color(1, 1, 1))
+	# У инструмента вместо количества показываем остаток прочности:
+	# он всегда лежит в сумке по одному.
+	var caption := "%d" % int(entry.get("count", 0))
+	if ItemDB.is_breakable(item_id):
+		caption = Wear.text(
+			Game.wear_left(Net.my_id, item_id),
+			Wear.max_uses(item_id)
+		)
+	var count := _make_label(caption, 16, Color(1, 1, 1))
 	count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(count)
 	return cell
@@ -417,6 +435,20 @@ func _refresh_bars(delta: float) -> void:
 	_hp_text.text = "%d/%d" % [int(round(hp)), int(round(max_hp))]
 	_mp_text.text = "%d/%d" % [int(round(mp)), int(round(max_mp))]
 
+	if _xp_bar != null:
+		var progress: Dictionary = stats.progress(peer_id)
+		var need := maxi(1, int(progress.get("exp_next", 1)))
+		_xp_bar.max_value = need
+		_xp_bar.value = clampi(int(progress.get("exp", 0)), 0, need)
+		var free_points := int(progress.get("points", 0))
+		_level_text.text = "Ур %d/%d • %d/%d%s" % [
+			int(progress.get("level", 0)),
+			int(progress.get("cap", 0)),
+			int(progress.get("exp", 0)),
+			need,
+			(" • очков %d" % free_points) if free_points > 0 else "",
+		]
+
 func _local_player() -> Player:
 	if _world == null:
 		return null
@@ -442,6 +474,8 @@ func _prompt_text(player: Player) -> String:
 	var target: ResourceNode = player.get_target()
 	if target == null:
 		return ""
+	if Rules.is_hand_pickup(target.resource_type):
+		return "E — подобрать: %s" % target.label()
 	var tool := ItemDB.tool_tag(Game.get_equipped(Net.my_id))
 	if Rules.can_harvest(target.resource_type, tool):
 		return "E — добыть: %s" % target.label()
@@ -471,18 +505,25 @@ func _refresh_inventory() -> void:
 
 func _refresh_hotbar() -> void:
 	var current := Game.get_equipped(Net.my_id)
-	for i in ItemDB.HOTBAR.size():
-		var item_id := String(ItemDB.HOTBAR[i])
-		var slot: Label = _hotbar_slots.get(item_id, null)
+	for entry in ItemDB.TOOL_SLOTS:
+		var slot_key := String(entry.get("key", ""))
+		var slot: Label = _hotbar_slots.get(slot_key, null)
 		if slot == null:
 			continue
-		var owned := _owns(item_id)
-		slot.add_theme_stylebox_override("normal", _slot_style(item_id == current))
+		var owned := not _best_tool(slot_key).is_empty()
+		var active := ItemDB.is_in_chain(slot_key, current)
+		slot.add_theme_stylebox_override("normal", _slot_style(active))
 		slot.modulate = Color(1, 1, 1, 1) if owned else Color(1, 1, 1, 0.45)
 
-func _owns(item_id: String) -> bool:
+## Лучший инструмент слота, который лежит в сумке. Пустая строка, если нет.
+func _best_tool(slot_key: String) -> String:
 	var inv: Inventory = Game.get_inventory(Net.my_id)
-	return inv != null and inv.has(item_id)
+	if inv == null:
+		return ""
+	for item_id in ItemDB.tool_chain(slot_key):
+		if inv.has(String(item_id)):
+			return String(item_id)
+	return ""
 
 func show_notice(text: String) -> void:
 	if _toast == null:
@@ -497,6 +538,11 @@ func _on_inventory_changed(peer_id: int) -> void:
 func _on_equipped_changed(peer_id: int) -> void:
 	if peer_id == Net.my_id:
 		_refresh_hotbar()
+
+## Прочность меняется от каждого удара: если сумка открыта, ячейки обновляем.
+func _on_wear_changed(peer_id: int) -> void:
+	if peer_id == Net.my_id and Game.ui_inventory_open:
+		_refresh_inventory()
 
 func _on_roster_changed(_players: Dictionary) -> void:
 	_refresh_hotbar()
@@ -526,12 +572,20 @@ func _unhandled_input(event: InputEvent) -> void:
 func _is_cursor_captured() -> bool:
 	return DisplayServer.get_name() != "headless" and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
 
+## Окно статуса держит кнопки распределения очков, поэтому пока оно открыто,
+## курсор свободен. Закрыли, и мышь снова в игре.
 func _toggle_stats() -> void:
 	if _stats_panel == null:
 		return
 	_stats_panel.visible = not _stats_panel.visible
 	if _stats_panel.visible and _stats_panel.has_method("refresh"):
 		_stats_panel.refresh()
+	if DisplayServer.get_name() == "headless":
+		return
+	if _stats_panel.visible:
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	elif not Game.ui_inventory_open:
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 func _toggle_inventory() -> void:
 	Game.ui_inventory_open = not Game.ui_inventory_open

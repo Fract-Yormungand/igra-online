@@ -50,6 +50,7 @@ var _slow_left := 0.0
 var _slow_factor := 1.0
 var _push_left := 0.0
 var _push_velocity := Vector3.ZERO
+var _tool_visual: ToolVisual
 
 func setup(id: int, nick: String, local: bool, spawn_position: Vector3, yaw: float) -> void:
 	peer_id = id
@@ -99,6 +100,9 @@ func _ready() -> void:
 	collision_layer = 1
 	collision_mask = 1
 	_build_body()
+	# Прочность, экипировка и сумка живут на сервере: модель только слушает.
+	Game.equipped_changed.connect(_on_equipped_changed)
+	_refresh_tool()
 	if is_local:
 		_setup_camera()
 		if DisplayServer.get_name() != "headless":
@@ -140,6 +144,20 @@ func _build_body() -> void:
 	_name_label.modulate = Color(1.0, 1.0, 1.0, 0.9)
 	_name_label.outline_size = 12
 	add_child(_name_label)
+
+	_tool_visual = ToolVisual.new()
+	_tool_visual.name = "Tool"
+	add_child(_tool_visual)
+
+## В руке показываем то, что сервер записал этому игроку.
+func _on_equipped_changed(changed_peer: int) -> void:
+	if changed_peer == peer_id:
+		_refresh_tool()
+
+func _refresh_tool() -> void:
+	if _tool_visual == null:
+		return
+	_tool_visual.show_item(Game.get_equipped(peer_id))
 
 func _setup_camera() -> void:
 	_pivot = Node3D.new()
@@ -370,13 +388,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		_try_harvest()
 		return
 	if event.is_action_pressed("slot_1"):
-		Game.request_equip("axe")
+		Game.request_tool("axe")
 		return
 	if event.is_action_pressed("slot_2"):
-		Game.request_equip("pickaxe")
+		Game.request_tool("pickaxe")
 		return
 	if event.is_action_pressed("slot_3"):
-		Game.request_equip("spear")
+		Game.request_tool("spear")
 		return
 	if event is InputEventMouseButton and event.pressed and not Game.ui_inventory_open:
 		if DisplayServer.get_name() != "headless" and Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:

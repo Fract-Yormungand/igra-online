@@ -5,7 +5,7 @@ extends Node
 ## инструментом добыча не проходит и что состояние источника синхронизируется.
 ## Запускается флагом --e2e <адрес> [порт].
 
-const TIMEOUT := 45.0
+const TIMEOUT := 60.0
 
 var _elapsed := 0.0
 var _wait := 0.0
@@ -21,6 +21,7 @@ var _mp_after := 0.0
 var _boar_id := -1
 var _boar_start := Vector3.ZERO
 var _stone_id := -1
+var _hunt_id := -1
 
 func _ready() -> void:
 	print("[E2E] старт")
@@ -55,25 +56,28 @@ func _process(delta: float) -> void:
 					_fail("не нашёл своего персонажа в мире")
 					_finish()
 					return
-				# Двигаем самого персонажа: позицию на сервер шлёт его же
-				# _physics_process, ручная отправка тут же перезапишется.
-				player.global_position = Vector3(tree["position"]) + Vector3(2.0, 0.3, 0.0)
-				_phase = 1
-				_wait = 0.6
+				# Стартового инструмента больше нет: сначала собираем палки и
+				# камни с земли и крафтим примитивный топор.
+				_begin_start()
 		1:
 			_test_stats()
 			_wood_before = _inv().count("wood")
 			print("[E2E] дерево #%d, дерева в сумке %d, в руках %s" % [_tree_id, _wood_before, Game.get_equipped(Net.my_id)])
 			Game.request_harvest(_tree_id)
+			# Кирка нужна на следующем шаге: заказываем её, пока проверяем дерево.
+			var crafting := Features.mechanic("crafting")
+			if crafting != null:
+				crafting.request_craft("primitive_pickaxe")
 			_phase = 2
-			_wait = 0.8
+			_wait = 2.4
 		2:
 			_check(_inv().count("wood") == _wood_before + 1, "топор дал дерево: было %d, стало %d" % [_wood_before, _inv().count("wood")])
-			Game.request_equip("pickaxe")
+			_check(_inv().count("primitive_pickaxe") == 1, "примитивная кирка скрафчена: %d" % _inv().count("primitive_pickaxe"))
+			Game.request_tool("pickaxe")
 			_phase = 3
 			_wait = 0.6
 		3:
-			_check(Game.get_equipped(Net.my_id) == "pickaxe", "кирка взята в руки, в руках %s" % Game.get_equipped(Net.my_id))
+			_check(ItemDB.tool_tag(Game.get_equipped(Net.my_id)) == "pickaxe", "кирка взята в руки, в руках %s" % Game.get_equipped(Net.my_id))
 			_wood_before = _inv().count("wood")
 			Game.request_harvest(_tree_id)
 			_phase = 4
@@ -85,7 +89,7 @@ func _process(delta: float) -> void:
 			_phase = 5
 			_wait = 0.2
 		5:
-			Game.request_equip("axe")
+			Game.request_tool("axe")
 			_phase = 6
 			_wait = 0.6
 		6:
@@ -183,7 +187,7 @@ func _process(delta: float) -> void:
 			_phase = 21
 			_wait = 0.6
 		21:
-			Game.request_equip("pickaxe")
+			Game.request_tool("pickaxe")
 			_phase = 22
 			_wait = 0.6
 		22:
@@ -210,7 +214,81 @@ func _process(delta: float) -> void:
 			_check(Game.get_equipped(Net.my_id) == "spear", "копьё взято в руки: %s" % Game.get_equipped(Net.my_id))
 			_check_inventory_ui()
 			_ram_test()
+			_hunt_start()
+			_phase = 28
+			_wait = 0.6
+		28:
+			_hunt_hit()
+			_phase = 29
+			_wait = 0.5
+		29:
+			_hunt_hit()
+			_phase = 30
+			_wait = 0.5
+		30:
+			_hunt_hit()
+			_phase = 31
+			_wait = 0.5
+		31:
+			_hunt_hit()
+			_phase = 32
+			_wait = 1.0
+		32:
+			# Копьё добило моба на сервере, за убийство капает опыт.
+			_check_xp()
 			_finish()
+
+## Сбор старта: палки и камни с земли, затем примитивный топор. Корутина,
+## потому что сервер проверяет расстояние и должен увидеть нашу позицию.
+func _begin_start() -> void:
+	_phase = -1
+	for kind in [Rules.RESOURCE_STICK, Rules.RESOURCE_PEBBLE]:
+		var want := 4 if kind == Rules.RESOURCE_STICK else 5
+		var picked := 0
+		for resource_id in _resource_ids(kind, want):
+			var player := _local_player()
+			if player == null:
+				_fail("нет персонажа для сбора с земли")
+				break
+			var spot: Vector3 = Game.resources[resource_id].get("position", Vector3.ZERO)
+			player.global_position = spot + Vector3(1.4, 0.3, 0.0)
+			await get_tree().create_timer(0.4).timeout
+			Game.request_harvest(resource_id)
+			picked += 1
+			await get_tree().create_timer(0.2).timeout
+		print("[E2E] собрано %s: %d" % [kind, picked])
+
+	_check(_inv().count("stick") >= 4, "палки собраны с земли: %d" % _inv().count("stick"))
+	_check(_inv().count("stone") >= 5, "камни собраны с земли: %d" % _inv().count("stone"))
+
+	var crafting := Features.mechanic("crafting")
+	if crafting != null:
+		crafting.request_craft("primitive_axe")
+	await get_tree().create_timer(1.9).timeout
+	_check(_inv().count("primitive_axe") == 1, "примитивный топор скрафчен: %d" % _inv().count("primitive_axe"))
+	_check(Game.get_equipped(Net.my_id) == "primitive_axe", "топор сам встал в руку: %s" % Game.get_equipped(Net.my_id))
+
+	var tree := _first_resource("tree")
+	var player := _local_player()
+	if player != null and not tree.is_empty():
+		player.global_position = Vector3(tree["position"]) + Vector3(2.0, 0.3, 0.0)
+	await get_tree().create_timer(0.5).timeout
+	_phase = 1
+	_wait = 0.2
+
+## Номера живых источников нужного вида.
+func _resource_ids(kind: String, want: int) -> Array:
+	var result: Array = []
+	for key in Game.resources:
+		var state: Dictionary = Game.resources[key]
+		if String(state.get("type", "")) != kind:
+			continue
+		if not bool(state.get("alive", false)):
+			continue
+		result.append(int(key))
+		if result.size() >= want:
+			break
+	return result
 
 ## Характеристики приходят с сервера отдельным пакетом: клиент обязан получить
 ## здоровье, запас сил и все четыре характеристики.
@@ -378,9 +456,10 @@ func _ram_test() -> void:
 	if mobs == null:
 		_fail("наезд: нет механики мобов")
 		return
-	var target := _first_mob("boar")
+	# Слайм слабее: наезд на скорости добивает его и даёт опыт.
+	var target := _first_mob("slime")
 	if target.is_empty():
-		target = _first_mob("slime")
+		target = _first_mob("boar")
 	if target.is_empty():
 		_fail("наезд: не нашёл моба")
 		return
@@ -401,6 +480,47 @@ func _ram_test() -> void:
 	var after := float(state.get("hp", 0.0))
 	_check(after < before, "машина сбила моба: было %.1f, стало %.1f" % [before, after])
 	_check(RamRules.damage(14.0, 6.0) > 0.0, "правило наезда даёт урон")
+
+## Охота: встаём вплотную к мобу и бьём по-настоящему. Наезд считается
+## только на сервере, поэтому опыт проверяем обычным ударом.
+func _hunt_start() -> void:
+	var target := _first_mob("slime")
+	if target.is_empty():
+		target = _first_mob("boar")
+	if target.is_empty():
+		_fail("не нашёл моба для удара")
+		return
+	_hunt_id = int(target["id"])
+	var player := _local_player()
+	if player != null:
+		player.global_position = Vector3(target["position"]) + Vector3(2.0, 0.4, 0.0)
+	print("[E2E] бьём моба #%d копьём в руках" % _hunt_id)
+
+func _hunt_hit() -> void:
+	var mobs := Features.mechanic("mobs")
+	if mobs == null or _hunt_id < 0:
+		return
+	mobs.request_attack(_hunt_id)
+
+## Прокачка: опыт приходит с сервера после убийства, уровень и пул очков
+## считаются по калькулятору.
+func _check_xp() -> void:
+	var stats := _stats()
+	if stats == null:
+		_fail("прокачка: нет механики характеристик")
+		return
+	var progress: Dictionary = stats.progress(Net.my_id)
+	print("[E2E] прокачка: уровень %d из %d, опыт %d/%d, эволюция %d, очков %d" % [
+		int(progress["level"]), int(progress["cap"]), int(progress["exp"]),
+		int(progress["exp_next"]), int(progress["evolution"]), int(progress["points"])
+	])
+	_check(
+		int(progress["exp"]) > 0 or int(progress["level"]) > 0 or int(progress["evolution"]) > 0,
+		"за убийство начислен опыт: %d" % int(progress["exp"])
+	)
+	var next := int(progress["exp_next"])
+	_check(next > 0, "цена следующего уровня известна: %d" % next)
+	_check(int(progress["cap"]) == LevelRules.level_cap(int(progress["evolution"])), "кап уровня по формуле")
 
 ## Сумка глазами интерфейса: сетка ячеек и вкладка крафта.
 func _check_inventory_ui() -> void:

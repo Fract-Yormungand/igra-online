@@ -33,6 +33,11 @@ const SPAWN_POINTS := 8
 ## Машины стоят у лагеря: до них пара шагов от точки появления.
 const CAR_SPAWNS := 2
 
+## Палки и камни лежат на земле у лагеря: с них начинается крафт, когда
+## стартового инструмента нет. Берутся руками, инструмент не нужен.
+const STICK_COUNT := 14
+const PEBBLE_COUNT := 14
+
 ## Мобы. Вид задаёт поведение в механике mobs.
 const MOB_BOAR := "boar"
 const MOB_SLIME := "slime"
@@ -54,6 +59,19 @@ static func build() -> Dictionary:
 		var angle := TAU * float(i) / 7.0
 		var pos := Vector3(cos(angle) * 10.0, 0.0, 22.0 + sin(angle) * 7.0)
 		resources.append(_entry(next_id, Rules.RESOURCE_TREE, pos, rng))
+		next_id += 1
+
+	# Палки и камни на земле. Кольцо вокруг лагеря: не дальше пары шагов,
+	# но и не под ногами у точки появления.
+	for i in STICK_COUNT + PEBBLE_COUNT:
+		var angle := TAU * float(i) / float(STICK_COUNT + PEBBLE_COUNT) + 0.31
+		var radius := 7.0 + 14.0 * float(i % 5) / 4.0
+		var spot := SPAWN_CENTER + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius * 0.75)
+		var pickup_type := Rules.RESOURCE_STICK if i % 2 == 0 else Rules.RESOURCE_PEBBLE
+		# Палки и камни не садятся в дерево и друг в друга.
+		if not _far_from_entries(resources, spot, 2.4):
+			continue
+		resources.append(_entry(next_id, pickup_type, spot, rng))
 		next_id += 1
 
 	var trees: Array[Vector3] = []
@@ -177,6 +195,13 @@ static func _entry(id: int, resource_type: String, position: Vector3, rng: Rando
 		"rot_y": rng.randf_range(0.0, TAU),
 		"size": rng.randf_range(0.9, 1.2),
 	}
+
+## То же, но по готовым записям источников: у них позиция лежит в словаре.
+static func _far_from_entries(placed: Array, position: Vector3, min_distance: float) -> bool:
+	for entry in placed:
+		if position.distance_to(Vector3(entry.get("position", Vector3.ZERO))) < min_distance:
+			return false
+	return true
 
 static func _has_space(placed: Array, position: Vector3, min_distance: float) -> bool:
 	for other in placed:

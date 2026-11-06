@@ -4,8 +4,30 @@ extends RefCounted
 ## Рецепты крафта. Данные и чистые проверки, без сцен и сети: сервер и тест
 ## смотрят один и тот же список, поэтому расхождений быть не может.
 ## Порядок в LIST задаёт порядок строк в окне крафта.
+##
+## Примитивные инструменты делаются из палок и камней с земли, живут мало и
+## бьют слабо. Они открывают дерево, из которого уже выходит нормальный
+## инструмент.
 
 const LIST := {
+	"primitive_axe": {
+		"name": "Примитивный топор",
+		"output": {"item": "primitive_axe", "count": 1},
+		"cost": {"stick": 2, "stone": 2},
+		"seconds": 1.5,
+	},
+	"primitive_pickaxe": {
+		"name": "Примитивная кирка",
+		"output": {"item": "primitive_pickaxe", "count": 1},
+		"cost": {"stick": 2, "stone": 3},
+		"seconds": 2.0,
+	},
+	"primitive_spear": {
+		"name": "Примитивное копьё",
+		"output": {"item": "primitive_spear", "count": 1},
+		"cost": {"stick": 3, "stone": 1},
+		"seconds": 2.0,
+	},
 	"axe": {
 		"name": "Топор",
 		"output": {"item": "axe", "count": 1},

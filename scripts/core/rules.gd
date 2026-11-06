@@ -8,8 +8,27 @@ extends RefCounted
 const RESOURCE_TREE := "tree"
 const RESOURCE_STONE := "stone"
 const RESOURCE_ORE := "ore"
+## Палки и камни лежат на земле и берутся руками: это вход в крафт.
+const RESOURCE_STICK := "stick"
+const RESOURCE_PEBBLE := "pebble"
 
 const RESOURCE_SPECS := {
+	"stick": {
+		"label": "палка",
+		"required_tool": "",
+		"item": "stick",
+		"hits": 1,
+		"respawn_seconds": 30.0,
+		"hand": true,
+	},
+	"pebble": {
+		"label": "камень",
+		"required_tool": "",
+		"item": "stone",
+		"hits": 1,
+		"respawn_seconds": 40.0,
+		"hand": true,
+	},
 	"tree": {
 		"label": "дерево",
 		"required_tool": "axe",
@@ -48,9 +67,15 @@ static func label(resource_type: String) -> String:
 static func item_for(resource_type: String) -> String:
 	return String(spec(resource_type).get("item", ""))
 
+## Палки и камни с земли берутся руками, инструмент для них не нужен.
+static func is_hand_pickup(resource_type: String) -> bool:
+	return bool(spec(resource_type).get("hand", false))
+
 static func can_harvest(resource_type: String, tool_tag: String) -> bool:
 	if not is_known(resource_type):
 		return false
+	if is_hand_pickup(resource_type):
+		return true
 	if tool_tag.is_empty():
 		return false
 	return required_tool(resource_type) == tool_tag
@@ -92,7 +117,7 @@ static func apply_hit(state: Dictionary, tool_tag: String) -> Dictionary:
 	if not bool(state.get("alive", false)):
 		result["reason"] = "источник истощён"
 		return result
-	if tool_tag.is_empty():
+	if not is_hand_pickup(resource_type) and tool_tag.is_empty():
 		result["reason"] = "возьми инструмент в руку"
 		return result
 	if not can_harvest(resource_type, tool_tag):
