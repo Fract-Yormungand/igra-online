@@ -16,6 +16,8 @@ var _tree_id := -1
 var _wood_before := 0
 var _car_id := -1
 var _car_start := Vector3.ZERO
+var _mp_before := 0.0
+var _mp_after := 0.0
 
 func _ready() -> void:
 	print("[E2E] старт")
@@ -56,6 +58,7 @@ func _process(delta: float) -> void:
 				_phase = 1
 				_wait = 0.6
 		1:
+			_test_stats()
 			_wood_before = _inv().count("wood")
 			print("[E2E] дерево #%d, дерева в сумке %d, в руках %s" % [_tree_id, _wood_before, Game.get_equipped(Net.my_id)])
 			Game.request_harvest(_tree_id)
@@ -148,7 +151,47 @@ func _process(delta: float) -> void:
 			_phase = 15
 			_wait = 0.2
 		15:
+			_spend_mana()
+			_phase = 16
+			_wait = 0.8
+		16:
+			var stats := _stats()
+			var mp_now: float = stats.mp(Net.my_id) if stats != null else _mp_before
+			_check(mp_now < _mp_before - 1.0, "сервер списал запас сил за бег: было %.0f, стало %.0f" % [_mp_before, mp_now])
 			_finish()
+
+## Характеристики приходят с сервера отдельным пакетом: клиент обязан получить
+## здоровье, запас сил и все четыре характеристики.
+func _test_stats() -> void:
+	var stats := _stats()
+	if stats == null:
+		_fail("механика характеристик не создалась на клиенте")
+		return
+	var hp: float = stats.hp(Net.my_id)
+	var max_hp: float = stats.max_hp(Net.my_id)
+	var attrs: Dictionary = stats.attributes(Net.my_id)
+	print("[E2E] статы: hp %.0f/%.0f, mp %.0f/%.0f, сила %d тело %d магия %d ловкость %d" % [
+		hp, max_hp, stats.mp(Net.my_id), stats.max_mp(Net.my_id),
+		int(attrs["strength"]), int(attrs["body"]), int(attrs["magic"]), int(attrs["agility"]),
+	])
+	_check(max_hp > 0.0, "максимум здоровья посчитан: %.0f" % max_hp)
+	_check(hp > 0.0, "здоровье пришло с сервера: %.0f" % hp)
+	_check(is_equal_approx(hp, max_hp), "новый игрок приходит с полным здоровьем")
+	_check(stats.max_mp(Net.my_id) > 0.0, "запас сил посчитан: %.0f" % stats.max_mp(Net.my_id))
+	for key in DerivedStats.ATTRIBUTE_KEYS:
+		_check(int(attrs[key]) >= 0, "характеристика %s пришла" % key)
+	_check(stats.dodge_chance(Net.my_id) >= 0.0, "уклонение считается")
+	_check(not stats.is_downed(Net.my_id), "новый игрок на ногах")
+
+func _spend_mana() -> void:
+	var stats := _stats()
+	if stats == null:
+		return
+	_mp_before = stats.mp(Net.my_id)
+	stats.request_mana(30.0)
+
+func _stats() -> Node:
+	return Features.mechanic("stats")
 
 func _inv() -> Inventory:
 	return Game.get_inventory(Net.my_id)

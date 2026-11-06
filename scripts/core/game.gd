@@ -372,6 +372,18 @@ func _sync_equipped(peer_id: int, item_id: String) -> void:
 	equipped[peer_id] = item_id
 	equipped_changed.emit(peer_id)
 
+## Публичное сообщение игроку. Им пользуются механики: урон, мобы, крафт.
+## Отказ при добыче идёт через _send_notice и пишется в лог как отказ,
+## а здесь обычная строка состояния, чтобы лог не путал причину.
+func notify_peer(peer_id: int, text: String) -> void:
+	print("[GAME] #%d: %s" % [peer_id, text])
+	if peer_id == Net.my_id:
+		notice.emit(text)
+		return
+	if Net.is_offline():
+		return
+	_receive_notice.rpc_id(peer_id, text)
+
 func _send_notice(peer_id: int, text: String) -> void:
 	# Отказы видно в логе сервера: так проще разбирать рассинхрон и жалобы.
 	print("[GAME] отказ #%d: %s" % [peer_id, text])

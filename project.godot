@@ -20,6 +20,7 @@ config/icon="res://icon.svg"
 Controls="*res://scripts/core/controls.gd"
 Net="*res://scripts/net/net.gd"
 Game="*res://scripts/core/game.gd"
+Features="*res://scripts/core/features.gd"
 
 [display]
 

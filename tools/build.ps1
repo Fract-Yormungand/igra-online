@@ -26,6 +26,8 @@ try {
     if (-not (Test-Path $exe) -or -not (Test-Path $pck)) { throw "export produced no exe/pck" }
 
     Copy-Item -Path "docs\handout\*.txt" -Destination $OutDir -Force
+    # Список включённых механик кладём рядом с exe: друг правит его без сборки.
+    Copy-Item -Path "features.cfg" -Destination $OutDir -Force
 
     if (Test-Path $Zip) { Remove-Item $Zip -Force }
     Compress-Archive -Path (Join-Path $OutDir "*") -DestinationPath $Zip -Force

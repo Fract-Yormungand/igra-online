@@ -13,6 +13,8 @@ func _initialize() -> void:
 	_test_world_gen()
 	_test_zones()
 	_test_day_cycle()
+	_test_derived_stats()
+	_test_feature_flags()
 	print("---")
 	print("Проверок: %d, провалов: %d" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -209,6 +211,96 @@ func _test_day_cycle() -> void:
 	var noon_sky := DayCycle.sky_horizon(0.5)
 	_check((dawn.r - dawn.b) > (noon_sky.r - noon_sky.b), "на восходе горизонт теплее, чем в полдень")
 	_check(DayCycle.sky_top(0.0).get_luminance() < DayCycle.sky_top(0.5).get_luminance(), "ночное небо темнее дневного")
+
+func _test_derived_stats() -> void:
+	var base := DerivedStats.start_attributes()
+	_check(DerivedStats.max_hp(base) > 0.0, "здоровье положительное")
+	_check(DerivedStats.max_mp(base) > 0.0, "запас сил положительный")
+
+	var stronger := base.duplicate()
+	stronger["strength"] = int(base["strength"]) + 5
+	var tougher := base.duplicate()
+	tougher["body"] = int(base["body"]) + 5
+	var magical := base.duplicate()
+	magical["magic"] = int(base["magic"]) + 5
+	var agile := base.duplicate()
+	agile["agility"] = int(base["agility"]) + 5
+
+	# сила + тело = здоровье, тело + магия = запас сил
+	_check(DerivedStats.max_hp(stronger) > DerivedStats.max_hp(base), "сила добавляет здоровья")
+	_check(DerivedStats.max_hp(tougher) > DerivedStats.max_hp(base), "тело добавляет здоровья")
+	_check(DerivedStats.max_mp(tougher) > DerivedStats.max_mp(base), "тело добавляет запас сил")
+	_check(DerivedStats.max_mp(magical) > DerivedStats.max_mp(base), "магия добавляет запас сил")
+	var hp_gain := DerivedStats.max_hp(stronger) - DerivedStats.max_hp(base)
+	_check(is_equal_approx(hp_gain, 5.0 * DerivedStats.HP_PER_STRENGTH), "пять силы дают ровно свой прирост здоровья: %.1f" % hp_gain)
+
+	# сила бьёт сильнее, магия усиливает эффекты
+	_check(DerivedStats.physical_power(stronger) > DerivedStats.physical_power(base), "сила усиливает физический урон")
+	_check(DerivedStats.magic_power(magical) > DerivedStats.magic_power(base), "магия усиливает эффекты")
+
+	# ловкость: скорость, уклонение, частота атак
+	_check(DerivedStats.speed_multiplier(agile) > DerivedStats.speed_multiplier(base), "ловкость ускоряет")
+	_check(DerivedStats.dodge_chance(agile) > DerivedStats.dodge_chance(base), "ловкость даёт уклонение")
+	_check(DerivedStats.attack_interval(1.0, agile) < DerivedStats.attack_interval(1.0, base), "ловкость ускоряет атаки")
+
+	# тело держит урон
+	_check(DerivedStats.resistance("physical", tougher) > DerivedStats.resistance("physical", base), "тело держит физику")
+	_check(DerivedStats.resistance("poison", tougher) > DerivedStats.resistance("poison", base), "тело держит яд")
+	_check(DerivedStats.resistance("magic", magical) > DerivedStats.resistance("magic", base), "магия держит магию")
+
+	# потолки: одна характеристика не должна ломать баланс
+	var flash := {"strength": 0, "body": 0, "magic": 0, "agility": 500}
+	_check(DerivedStats.dodge_chance(flash) <= DerivedStats.DODGE_MAX + 0.001, "уклонение ограничено сверху")
+	_check(DerivedStats.speed_multiplier(flash) <= 1.0 + DerivedStats.SPEED_BONUS_MAX + 0.001, "скорость ограничена сверху")
+	var rock := {"strength": 0, "body": 500, "magic": 500, "agility": 0}
+	_check(DerivedStats.resistance("physical", rock) <= DerivedStats.RESIST_MAX + 0.001, "сопротивление ограничено сверху")
+	_check(DerivedStats.resistance("magic", rock) <= DerivedStats.RESIST_MAX + 0.001, "сопротивление магии ограничено")
+
+	# мусор на входе
+	var junk := DerivedStats.normalized({"strength": -7, "body": "abc", "magic": 3.9})
+	_check(int(junk["strength"]) == 0, "отрицательная сила приводится к нулю")
+	_check(int(junk["body"]) == 0, "мусор в теле приводится к нулю")
+	_check(int(junk["magic"]) == 3, "дробная магия округляется вниз")
+	_check(int(junk["agility"]) == 0, "отсутствующая ловкость это ноль")
+
+	# урон после сопротивления
+	var after := DerivedStats.damage_after_resistance(100.0, "physical", rock)
+	_check(after < 100.0, "сопротивление срезает урон, дошло %.1f" % after)
+	_check(DerivedStats.damage_after_resistance(-5.0, "physical", base) == 0.0, "отрицательный урон это ноль")
+	_check(is_equal_approx(DerivedStats.damage_after_resistance(10.0, "unknown", base), 10.0), "неизвестный вид урона не режется")
+	_check(DerivedStats.damage_after_resistance(100.0, "poison", tougher) < 100.0, "яд тоже режется телом")
+
+	# сводка для панели
+	var all := DerivedStats.derived(base)
+	_check(all.has("max_hp") and all.has("dodge_chance") and all.has("resist_poison"), "сводка содержит все поля")
+	_check(is_equal_approx(float(all["max_hp"]), DerivedStats.max_hp(base)), "сводка не врёт про здоровье")
+	_check(DerivedStats.ATTRIBUTE_KEYS.size() == 4, "характеристик ровно четыре")
+	for key in DerivedStats.ATTRIBUTE_KEYS:
+		_check(DerivedStats.ATTRIBUTE_NAMES.has(key), "у характеристики %s есть русское имя" % key)
+	for kind in DerivedStats.DAMAGE_KINDS:
+		_check(DerivedStats.resistance(kind, base) >= 0.0, "сопротивление %s не отрицательное" % kind)
+	_check(DerivedStats.resistance("unknown", base) == 0.0, "неизвестный вид урона даёт нулевое сопротивление")
+
+func _test_feature_flags() -> void:
+	var defaults := {"harvest": true, "stats": true}
+	var flags := FeatureFlags.resolved(defaults, {"stats": false})
+	_check(bool(flags["harvest"]), "флаг по умолчанию остаётся включённым")
+	_check(not bool(flags["stats"]), "файл настроек выключает механику")
+	_check(flags.size() == 2, "лишних ключей в итоговых флагах нет")
+
+	var with_junk := FeatureFlags.resolved(defaults, {"stats": false, "mobs": true})
+	_check(not with_junk.has("mobs"), "неизвестный флаг не просачивается в игру")
+	_check(FeatureFlags.unknown_keys(defaults, {"stats": false, "mobs": true}) == ["mobs"], "опечатка в флагах видна")
+	_check(FeatureFlags.unknown_keys(defaults, {"stats": true}).is_empty(), "верные флаги не считаются опечаткой")
+
+	_check(FeatureFlags.enabled({"a": true, "b": false}) == ["a"], "список включённых")
+	_check(FeatureFlags.disabled({"a": true, "b": false}) == ["b"], "список выключенных")
+	var text := FeatureFlags.summary({"harvest": true, "stats": false})
+	_check(text.contains("harvest") and text.contains("stats"), "сводка называет механики: %s" % text)
+	_check(FeatureFlags.summary({}).contains("ничего"), "пустой набор флагов это ничего")
+	_check(FeatureFlags.DEFAULTS.has("stats"), "статистика включена по умолчанию")
+	_check(ResourceLoader.exists("res://scripts/mechanics/stats/stats_mechanic.gd"), "файл механики характеристик на месте")
+	_check(ResourceLoader.exists("res://scripts/core/features.gd"), "автозагрузка флагов на месте")
 
 func _test_zones() -> void:
 	_check(WorldGen.zone_at(WorldGen.MOUNTAIN_CENTER) == "Шахта", "центр горы это шахта")

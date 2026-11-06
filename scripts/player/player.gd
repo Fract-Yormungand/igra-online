@@ -17,6 +17,11 @@ const REACH := 4.2
 const HARVEST_COOLDOWN := 0.35
 const SEND_INTERVAL := 1.0 / 15.0
 const REMOTE_LERP_SPEED := 12.0
+## Бег: множитель скорости и цена в запасе сил за секунду.
+const SPRINT_MULTIPLIER := 1.45
+const SPRINT_MANA_PER_SECOND := 9.0
+## Списывать запас сил мелкими порциями: каждый кадр гонять RPC незачем.
+const MANA_REQUEST_STEP := 6.0
 
 var peer_id := 0
 var display_name := ""
@@ -38,6 +43,8 @@ var _target: ResourceNode = null
 var _target_vehicle: Car = null
 var _vehicle: Car = null
 var _shape: CollisionShape3D = null
+var _mana_debt := 0.0
+var _revive_requested := false
 
 func setup(id: int, nick: String, local: bool, spawn_position: Vector3, yaw: float) -> void:
 	peer_id = id
@@ -155,6 +162,7 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_cooldown = maxf(0.0, _cooldown - delta)
+	_check_downed()
 
 	if _vehicle != null:
 		_ride_vehicle(delta)
@@ -168,11 +176,12 @@ func _physics_process(delta: float) -> void:
 
 	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction := (transform.basis * Vector3(input_dir.x, 0.0, input_dir.y))
+	var move_speed := _current_speed(input_dir, delta)
 	if direction.length() > 0.01:
 		direction = direction.normalized()
 		var accel := ACCELERATION if is_on_floor() else ACCELERATION * AIR_CONTROL
-		velocity.x = move_toward(velocity.x, direction.x * SPEED, accel * delta * 10.0)
-		velocity.z = move_toward(velocity.z, direction.z * SPEED, accel * delta * 10.0)
+		velocity.x = move_toward(velocity.x, direction.x * move_speed, accel * delta * 10.0)
+		velocity.z = move_toward(velocity.z, direction.z * move_speed, accel * delta * 10.0)
 	else:
 		var brake := ACCELERATION * (1.0 if is_on_floor() else AIR_CONTROL) * delta * 10.0
 		velocity.x = move_toward(velocity.x, 0.0, brake)
@@ -204,6 +213,8 @@ func _ride_vehicle(delta: float) -> void:
 		Net.send_transform(global_position, rotation.y)
 
 func _find_target_vehicle() -> Car:
+	if not Features.on("vehicles"):
+		return null
 	var best: Car = null
 	var best_distance := REACH + 1.6
 	for node in get_tree().get_nodes_in_group("vehicles"):
@@ -218,6 +229,53 @@ func _find_target_vehicle() -> Car:
 		best = candidate
 		best_distance = distance
 	return best
+
+## Скорость с учётом ловкости и бега. Бег тратит запас сил: клиент просит
+## списание у сервера порциями, поэтому рывок не длится дольше, чем позволяет
+## присланный запас. Механики характеристик может не быть, тогда всё как раньше.
+func _current_speed(input_dir: Vector2, delta: float) -> float:
+	var stats := _stats()
+	if stats == null:
+		return SPEED
+	var speed := SPEED * float(stats.speed_multiplier(peer_id))
+	if not _sprinting(input_dir, stats):
+		return speed
+	_mana_debt += SPRINT_MANA_PER_SECOND * delta
+	if _mana_debt >= MANA_REQUEST_STEP:
+		stats.request_mana(_mana_debt)
+		_mana_debt = 0.0
+	return speed * SPRINT_MULTIPLIER
+
+func _sprinting(input_dir: Vector2, stats: Node) -> bool:
+	if input_dir.length() < 0.1:
+		return false
+	if not Input.is_action_pressed("sprint"):
+		return false
+	return float(stats.mp(peer_id)) >= MANA_REQUEST_STEP
+
+func _stats() -> Node:
+	return Features.mechanic("stats")
+
+## Упавшего игрока уводит в лагерь его же клиент: позиция персонажа и так
+## клиентская. Сервер только решает, что здоровья больше нет.
+func _check_downed() -> void:
+	var stats := _stats()
+	if stats == null:
+		return
+	if not bool(stats.is_downed(peer_id)):
+		_revive_requested = false
+		return
+	if _revive_requested:
+		return
+	_revive_requested = true
+	if _vehicle != null:
+		Game.request_vehicle_exit()
+	global_position = WorldGen.spawn_position(peer_id)
+	velocity = Vector3.ZERO
+	_target = null
+	_target_vehicle = null
+	Net.send_transform(global_position, rotation.y)
+	stats.request_revive()
 
 func set_remote_state(new_position: Vector3, new_yaw: float) -> void:
 	if is_local:

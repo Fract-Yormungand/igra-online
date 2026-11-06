@@ -35,7 +35,10 @@ func _ready() -> void:
 	_build_mountain()
 	_spawn_resources()
 
-	_build_vehicles()
+	# Машины это отдельная механика: выключил флаг vehicles, и площадка
+	# остаётся без машин, остальное работает как раньше.
+	if Features.on("vehicles"):
+		_build_vehicles()
 
 	players_root = Node3D.new()
 	players_root.name = "Players"
@@ -47,6 +50,10 @@ func _ready() -> void:
 	Net.vehicle_transform.connect(_on_vehicle_transform)
 	Game.vehicles_changed.connect(_on_vehicles_changed)
 	Game.state_reset.connect(_on_state_reset)
+
+	# Механики встают до HUD: окно статуса и подсказки ищут их по id.
+	# Каждая механика это узел под миром, свои узлы она строит сама.
+	Features.attach_mechanics(self)
 
 	hud = HUDScript.new()
 	add_child(hud)
@@ -62,8 +69,9 @@ func _ready() -> void:
 	if Net.is_client:
 		Game.request_state()
 
-	print("[WORLD] готов: сервер=%s клиент=%s источников=%d машин=%d" % [
-		Net.is_host, Net.is_client, resource_nodes.size(), _vehicle_nodes.size()
+	print("[WORLD] готов: сервер=%s клиент=%s источников=%d машин=%d | %s" % [
+		Net.is_host, Net.is_client, resource_nodes.size(), _vehicle_nodes.size(),
+		FeatureFlags.summary(Features.flags)
 	])
 
 func get_local_player() -> Player:
@@ -97,7 +105,12 @@ func _build_environment() -> void:
 
 	_update_day_cycle()
 
+func _exit_tree() -> void:
+	Features.detach_mechanics()
+
 func _process(delta: float) -> void:
+	if not Features.on("day_night"):
+		return
 	_day_timer += delta
 	if _day_timer < DAY_UPDATE_INTERVAL:
 		return
@@ -107,7 +120,8 @@ func _process(delta: float) -> void:
 func _update_day_cycle() -> void:
 	if _sun == null or _sky_material == null:
 		return
-	var progress := DayCycle.progress_now()
+	# Флаг day_night выключен: небо и свет стоят в полдень и не двигаются.
+	var progress := DayCycle.progress_now() if Features.on("day_night") else 0.5
 	_sun.rotation_degrees = DayCycle.sun_rotation_degrees(progress)
 	_sun.light_energy = DayCycle.sun_energy(progress)
 	_moon.rotation_degrees = DayCycle.moon_rotation_degrees(progress)

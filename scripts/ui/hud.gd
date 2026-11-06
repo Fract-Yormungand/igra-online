@@ -16,6 +16,13 @@ var _inv_panel: PanelContainer
 var _inv_list: VBoxContainer
 var _hotbar_slots: Dictionary = {}
 
+var _hp_bar: ProgressBar
+var _mp_bar: ProgressBar
+var _hp_text: Label
+var _mp_text: Label
+var _stats_panel: Control
+var _bars_left := 0.0
+
 var _toast_left := 0.0
 
 func setup(world: Node) -> void:
@@ -50,9 +57,31 @@ func _build() -> void:
 	top.add_theme_constant_override("separation", 16)
 	column.add_child(top)
 
+	var status_box := VBoxContainer.new()
+	status_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	status_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	status_box.add_theme_constant_override("separation", 4)
+	top.add_child(status_box)
+
 	_status = _make_label("", 16, Color(0.92, 0.95, 1.0))
-	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(_status)
+	status_box.add_child(_status)
+
+	# Полоски здоровья и запаса сил видно всегда: окно статуса открывают
+	# редко, а понимать, сколько осталось, нужно постоянно.
+	var bars := HBoxContainer.new()
+	bars.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bars.add_theme_constant_override("separation", 6)
+	status_box.add_child(bars)
+
+	_hp_bar = _make_bar(Color(0.78, 0.26, 0.26), 160.0)
+	bars.add_child(_hp_bar)
+	_hp_text = _make_label("", 13, Color(0.96, 0.90, 0.90))
+	bars.add_child(_hp_text)
+
+	_mp_bar = _make_bar(Color(0.30, 0.52, 0.92), 130.0)
+	bars.add_child(_mp_bar)
+	_mp_text = _make_label("", 13, Color(0.88, 0.92, 1.0))
+	bars.add_child(_mp_text)
 
 	var center_box := VBoxContainer.new()
 	center_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -67,7 +96,7 @@ func _build() -> void:
 	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center_box.add_child(_clock)
 
-	_hint = _make_label("Tab — сумка    E — добыча    1/2 — инструмент    Esc — курсор, ещё раз — в меню", 14, Color(0.86, 0.90, 0.94))
+	_hint = _make_label("Tab — сумка    C — статус    E — добыча    Shift — бег    1/2 — инструмент    Esc — курсор, ещё раз — в меню", 14, Color(0.86, 0.90, 0.94))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(_hint)
@@ -112,6 +141,24 @@ func _build() -> void:
 	_root.add_child(crosshair)
 
 	_build_inventory()
+	_build_stats()
+
+## Окно статуса живёт в папке механики: удалил папку, окна нет, HUD цел.
+func _build_stats() -> void:
+	if not Features.on("stats"):
+		return
+	var path := "res://scripts/mechanics/stats/stats_panel.gd"
+	if not ResourceLoader.exists(path):
+		return
+	var script: Script = load(path)
+	if script == null:
+		return
+	var panel: Control = script.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.visible = false
+	_root.add_child(panel)
+	_stats_panel = panel
 
 func _build_inventory() -> void:
 	_inv_panel = PanelContainer.new()
@@ -165,6 +212,23 @@ func _make_label(text: String, size: int, color: Color) -> Label:
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return label
 
+func _make_bar(color: Color, width: float) -> ProgressBar:
+	var bar := ProgressBar.new()
+	bar.custom_minimum_size = Vector2(width, 14.0)
+	bar.show_percentage = false
+	bar.max_value = 100.0
+	bar.value = 100.0
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var background := StyleBoxFlat.new()
+	background.bg_color = Color(0.06, 0.07, 0.09, 0.85)
+	background.set_corner_radius_all(4)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = color
+	fill.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("background", background)
+	bar.add_theme_stylebox_override("fill", fill)
+	return bar
+
 func _slot_style(active: bool) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.10, 0.28, 0.16, 0.92) if active else Color(0.08, 0.09, 0.11, 0.82)
@@ -180,6 +244,8 @@ func _slot_style(active: bool) -> StyleBoxFlat:
 # --- обновление ------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	_refresh_bars(delta)
+
 	if _status != null:
 		_status.text = _network_text()
 
@@ -200,6 +266,34 @@ func _process(delta: float) -> void:
 		_toast_left -= delta
 		if _toast_left <= 0.0 and _toast != null:
 			_toast.text = ""
+
+## Полоски обновляем пять раз в секунду: каждый кадр незачем, а запаздывание
+## на доли секунды глаз не замечает.
+func _refresh_bars(delta: float) -> void:
+	if _hp_bar == null:
+		return
+	_bars_left -= delta
+	if _bars_left > 0.0:
+		return
+	_bars_left = 0.2
+	var stats := Features.mechanic("stats")
+	if stats == null:
+		_hp_bar.value = 0.0
+		_mp_bar.value = 0.0
+		_hp_text.text = ""
+		_mp_text.text = ""
+		return
+	var peer_id := Net.my_id
+	var max_hp: float = maxf(1.0, stats.max_hp(peer_id))
+	var max_mp: float = maxf(1.0, stats.max_mp(peer_id))
+	var hp: float = stats.hp(peer_id)
+	var mp: float = stats.mp(peer_id)
+	_hp_bar.max_value = max_hp
+	_hp_bar.value = clampf(hp, 0.0, max_hp)
+	_mp_bar.max_value = max_mp
+	_mp_bar.value = clampf(mp, 0.0, max_mp)
+	_hp_text.text = "%d/%d" % [int(round(hp)), int(round(max_hp))]
+	_mp_text.text = "%d/%d" % [int(round(mp)), int(round(max_mp))]
 
 func _local_player() -> Player:
 	if _world == null:
@@ -291,10 +385,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		_toggle_inventory()
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed("toggle_stats"):
+		_toggle_stats()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("ui_cancel"):
-		# Esc по шагам: закрыть сумку, потом освободить курсор, потом выйти
-		# в меню. Без последнего шага из мира не выйти, не закрывая игру.
-		if Game.ui_inventory_open:
+		# Esc по шагам: закрыть окно статуса и сумку, потом освободить курсор,
+		# потом выйти в меню. Без последнего шага из мира не выйти.
+		if _stats_panel != null and _stats_panel.visible:
+			_toggle_stats()
+		elif Game.ui_inventory_open:
 			_toggle_inventory()
 		elif _is_cursor_captured():
 			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -304,6 +404,13 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _is_cursor_captured() -> bool:
 	return DisplayServer.get_name() != "headless" and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
+
+func _toggle_stats() -> void:
+	if _stats_panel == null:
+		return
+	_stats_panel.visible = not _stats_panel.visible
+	if _stats_panel.visible and _stats_panel.has_method("refresh"):
+		_stats_panel.refresh()
 
 func _toggle_inventory() -> void:
 	Game.ui_inventory_open = not Game.ui_inventory_open
