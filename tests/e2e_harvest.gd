@@ -157,7 +157,7 @@ func _process(delta: float) -> void:
 		16:
 			var stats := _stats()
 			var mp_now: float = stats.mp(Net.my_id) if stats != null else _mp_before
-			_check(mp_now < _mp_before - 1.0, "сервер списал запас сил за бег: было %.0f, стало %.0f" % [_mp_before, mp_now])
+			_check(mp_now < _mp_before - 1.0, "сервер списал запас сил по просьбе клиента: было %.0f, стало %.0f" % [_mp_before, mp_now])
 			_finish()
 
 ## Характеристики приходят с сервера отдельным пакетом: клиент обязан получить
@@ -180,7 +180,13 @@ func _test_stats() -> void:
 	_check(stats.max_mp(Net.my_id) > 0.0, "запас сил посчитан: %.0f" % stats.max_mp(Net.my_id))
 	for key in DerivedStats.ATTRIBUTE_KEYS:
 		_check(int(attrs[key]) >= 0, "характеристика %s пришла" % key)
-	_check(stats.dodge_chance(Net.my_id) >= 0.0, "уклонение считается")
+	_check(is_equal_approx(
+		stats.max_hp(Net.my_id),
+		(float(attrs["body"]) + float(attrs["strength"])) * DerivedStats.HP_MULT
+	), "здоровье посчитано из тела и силы")
+	_check(is_equal_approx(stats.speed_mps(Net.my_id), float(attrs["agility"]) / 3.6), "скорость равна ловкости в км/ч: %.2f м/с" % stats.speed_mps(Net.my_id))
+	_check(stats.actions_per_round(Net.my_id) >= 1, "действий за раунд хотя бы одно: %d" % stats.actions_per_round(Net.my_id))
+	_check(is_equal_approx(stats.state_coefficient(Net.my_id), 1.0), "целый персонаж в полной силе")
 	_check(not stats.is_downed(Net.my_id), "новый игрок на ногах")
 	_check_stats_panel()
 

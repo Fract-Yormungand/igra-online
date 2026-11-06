@@ -55,19 +55,17 @@ func refresh() -> void:
 		label.text = str(int(attrs.get(key, 0)))
 
 	var derived: Dictionary = stats.derived(peer_id)
+	var best: Dictionary = derived.get("magic_best", {})
 	_derived_label.text = "\n".join(PackedStringArray([
-		"Здоровье            %d" % int(round(float(derived["max_hp"]))),
-		"Запас сил           %d" % int(round(float(derived["max_mp"]))),
-		"Физический урон     x%.2f" % float(derived["physical_power"]),
-		"Сила магии          x%.2f" % float(derived["magic_power"]),
-		"Скорость            x%.2f" % float(derived["speed_multiplier"]),
-		"Уклонение           %d%%" % int(round(float(derived["dodge_chance"]) * 100.0)),
-		"Пауза между атаками %.2f с" % float(derived["attack_interval"]),
-		"Сопротивление: физика %d%%, магия %d%%, яд %d%%" % [
-			int(round(float(derived["resist_physical"]) * 100.0)),
-			int(round(float(derived["resist_magic"]) * 100.0)),
-			int(round(float(derived["resist_poison"]) * 100.0)),
-		],
+		"Состояние           x%.2f" % float(derived["coefficient"]),
+		"Скорость            %d км/ч" % int(round(float(derived["speed_kmh"]))),
+		"Действий за раунд   %d" % int(derived["actions"]),
+		"Удар по телу %d: %.1f" % [int(attrs["body"]), float(derived["reference_damage"])],
+		"Подъём на руку      %d кг" % int(round(float(derived["carry_kg"]))),
+		"Потолок магии       %d" % int(round(float(derived["magic_ceiling"]))),
+		"Лучший заряд        %d шагов" % int(best.get("steps", 0)),
+		"Предел перегруза    %d" % int(round(float(derived["overload_limit"]))),
+		"Самоурон за раунд   %.1f" % float(derived["overload_self"]),
 	]))
 
 func _set_unavailable() -> void:

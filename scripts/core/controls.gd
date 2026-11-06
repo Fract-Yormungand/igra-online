@@ -19,7 +19,6 @@ const ACTIONS := {
 	"slot_1": [KEY_1],
 	"slot_2": [KEY_2],
 	"slot_3": [KEY_3],
-	"sprint": [KEY_SHIFT],
 	"toggle_stats": [KEY_C],
 }
 

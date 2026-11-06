@@ -214,72 +214,96 @@ func _test_day_cycle() -> void:
 
 func _test_derived_stats() -> void:
 	var base := DerivedStats.start_attributes()
-	_check(DerivedStats.max_hp(base) > 0.0, "здоровье положительное")
-	_check(DerivedStats.max_mp(base) > 0.0, "запас сил положительный")
+	_check(DerivedStats.ATTRIBUTE_KEYS.size() == 4, "характеристик ровно четыре")
+	for key in DerivedStats.ATTRIBUTE_KEYS:
+		_check(DerivedStats.ATTRIBUTE_NAMES.has(key), "у характеристики %s есть русское имя" % key)
+
+	# Здоровье и запас сил: (тело + стат) * 3
+	var hp_expected := (14.0 + 12.0) * DerivedStats.HP_MULT
+	_check(is_equal_approx(DerivedStats.max_hp(base), hp_expected), "здоровье это (тело + сила) * 3: %.1f" % DerivedStats.max_hp(base))
+	var mp_expected := (14.0 + 10.0) * DerivedStats.HP_MULT
+	_check(is_equal_approx(DerivedStats.max_mp(base), mp_expected), "запас сил это (тело + магия) * 3: %.1f" % DerivedStats.max_mp(base))
 
 	var stronger := base.duplicate()
-	stronger["strength"] = int(base["strength"]) + 5
+	stronger["strength"] = int(base["strength"]) + 1
 	var tougher := base.duplicate()
-	tougher["body"] = int(base["body"]) + 5
+	tougher["body"] = int(base["body"]) + 1
 	var magical := base.duplicate()
-	magical["magic"] = int(base["magic"]) + 5
+	magical["magic"] = int(base["magic"]) + 1
 	var agile := base.duplicate()
-	agile["agility"] = int(base["agility"]) + 5
+	agile["agility"] = int(base["agility"]) + 1
 
-	# сила + тело = здоровье, тело + магия = запас сил
-	_check(DerivedStats.max_hp(stronger) > DerivedStats.max_hp(base), "сила добавляет здоровья")
-	_check(DerivedStats.max_hp(tougher) > DerivedStats.max_hp(base), "тело добавляет здоровья")
-	_check(DerivedStats.max_mp(tougher) > DerivedStats.max_mp(base), "тело добавляет запас сил")
-	_check(DerivedStats.max_mp(magical) > DerivedStats.max_mp(base), "магия добавляет запас сил")
-	var hp_gain := DerivedStats.max_hp(stronger) - DerivedStats.max_hp(base)
-	_check(is_equal_approx(hp_gain, 5.0 * DerivedStats.HP_PER_STRENGTH), "пять силы дают ровно свой прирост здоровья: %.1f" % hp_gain)
+	_check(is_equal_approx(DerivedStats.max_hp(stronger) - DerivedStats.max_hp(base), DerivedStats.HP_MULT), "одно очко силы даёт три здоровья")
+	_check(is_equal_approx(DerivedStats.max_hp(tougher) - DerivedStats.max_hp(base), DerivedStats.HP_MULT), "одно очко тела даёт три здоровья")
+	_check(is_equal_approx(DerivedStats.max_mp(tougher) - DerivedStats.max_mp(base), DerivedStats.HP_MULT), "одно очко тела даёт три запаса сил")
+	_check(is_equal_approx(DerivedStats.max_mp(magical) - DerivedStats.max_mp(base), DerivedStats.HP_MULT), "одно очко магии даёт три запаса сил")
+	_check(is_equal_approx(DerivedStats.max_hp(magical), DerivedStats.max_hp(base)), "магия не трогает здоровье")
 
-	# сила бьёт сильнее, магия усиливает эффекты
-	_check(DerivedStats.physical_power(stronger) > DerivedStats.physical_power(base), "сила усиливает физический урон")
-	_check(DerivedStats.magic_power(magical) > DerivedStats.magic_power(base), "магия усиливает эффекты")
+	# Ловкость: одно очко это один километр в час и действия
+	_check(is_equal_approx(DerivedStats.speed_kmh(base), float(base["agility"])), "скорость равна ловкости в км/ч")
+	_check(is_equal_approx(DerivedStats.speed_mps(base), float(base["agility"]) / 3.6), "километры в час переводятся в метры")
+	_check(is_equal_approx(DerivedStats.speed_kmh(agile) - DerivedStats.speed_kmh(base), 1.0), "одно очко ловкости даёт один километр в час")
+	_check(DerivedStats.actions_per_round(base) == 1, "на 19 ловкости одно действие")
+	var fast := base.duplicate()
+	fast["agility"] = 20
+	_check(DerivedStats.actions_per_round(fast) == 2, "на 20 ловкости два действия")
+	var still := base.duplicate()
+	still["agility"] = 0
+	_check(DerivedStats.actions_per_round(still) == 1, "без ловкости всё равно одно действие")
 
-	# ловкость: скорость, уклонение, частота атак
-	_check(DerivedStats.speed_multiplier(agile) > DerivedStats.speed_multiplier(base), "ловкость ускоряет")
-	_check(DerivedStats.dodge_chance(agile) > DerivedStats.dodge_chance(base), "ловкость даёт уклонение")
-	_check(DerivedStats.attack_interval(1.0, agile) < DerivedStats.attack_interval(1.0, base), "ловкость ускоряет атаки")
+	# Тело режет урон: доля = удар / (удар + тело)
+	_check(is_equal_approx(DerivedStats.penetration(20.0, 20.0), 0.5), "равные удар и тело дают половину")
+	_check(is_equal_approx(DerivedStats.damage_through_body(20.0, 20.0), 10.0), "из 20 урона по телу 20 доходит 10")
+	var tough_damage := DerivedStats.damage_through_body(20.0, 60.0)
+	var weak_damage := DerivedStats.damage_through_body(20.0, 5.0)
+	_check(tough_damage < weak_damage, "тело снижает урон: %.1f против %.1f" % [tough_damage, weak_damage])
+	_check(DerivedStats.damage_through_body(0.0, 10.0) == 0.0, "нулевой удар не бьёт")
+	_check(is_equal_approx(DerivedStats.penetration(10.0, 0.0), 1.0), "без тела проходит весь урон")
 
-	# тело держит урон
-	_check(DerivedStats.resistance("physical", tougher) > DerivedStats.resistance("physical", base), "тело держит физику")
-	_check(DerivedStats.resistance("poison", tougher) > DerivedStats.resistance("poison", base), "тело держит яд")
-	_check(DerivedStats.resistance("magic", magical) > DerivedStats.resistance("magic", base), "магия держит магию")
+	# Уклонение работает только на разницу ловкости
+	_check(DerivedStats.evasion(10.0, 10.0) == 0.0, "равная ловкость не даёт уклонения")
+	_check(DerivedStats.evasion(10.0, 20.0) == 0.0, "медленная цель не уклоняется")
+	_check(is_equal_approx(DerivedStats.evasion(20.0, 10.0), 0.5), "ловкая цель уклоняется на разницу")
+	_check(DerivedStats.hit_chance(50.0) < DerivedStats.hit_chance(0.0), "уклонение снижает шанс попадания")
+	_check(DerivedStats.expected_d100(0.0) > 0.0 and DerivedStats.expected_d100(100.0) < 1.0, "средний d100 в разумных пределах")
+	_check(DerivedStats.expected_d100(50.0) < DerivedStats.expected_d100(0.0), "против ловкого средний урон ниже")
 
-	# потолки: одна характеристика не должна ломать баланс
-	var flash := {"strength": 0, "body": 0, "magic": 0, "agility": 500}
-	_check(DerivedStats.dodge_chance(flash) <= DerivedStats.DODGE_MAX + 0.001, "уклонение ограничено сверху")
-	_check(DerivedStats.speed_multiplier(flash) <= 1.0 + DerivedStats.SPEED_BONUS_MAX + 0.001, "скорость ограничена сверху")
-	var rock := {"strength": 0, "body": 500, "magic": 500, "agility": 0}
-	_check(DerivedStats.resistance("physical", rock) <= DerivedStats.RESIST_MAX + 0.001, "сопротивление ограничено сверху")
-	_check(DerivedStats.resistance("magic", rock) <= DerivedStats.RESIST_MAX + 0.001, "сопротивление магии ограничено")
+	# Состояние и эффективные статы
+	_check(is_equal_approx(DerivedStats.state_coefficient(1.0, 1.0), 1.0), "полный запас даёт коэффициент 1")
+	_check(is_equal_approx(DerivedStats.state_coefficient(0.5, 0.5), 0.5), "половина запаса даёт коэффициент 0.5")
+	_check(is_equal_approx(DerivedStats.state_coefficient(0.0, 1.0), 0.0), "без здоровья коэффициент 0")
+	var wounded := DerivedStats.effective(base, 0.5)
+	_check(is_equal_approx(float(wounded["strength"]), float(base["strength"]) * 0.5), "коэффициент состояния режет статы")
 
-	# мусор на входе
+	# Магия: накопление и потолок
+	_check(is_equal_approx(DerivedStats.magic_charge(10.0, 1), 10.0), "первый шаг даёт полную магию")
+	_check(DerivedStats.magic_charge(10.0, 3) > DerivedStats.magic_charge(10.0, 1), "накопление растёт")
+	_check(DerivedStats.magic_charge(10.0, 3) < DerivedStats.magic_ceiling(10.0), "накопление не перескакивает потолок")
+	_check(is_equal_approx(DerivedStats.magic_ceiling(10.0), 50.0), "потолок магии это магия / 0.2")
+	var best := DerivedStats.best_magic_charge(10.0, 14.0)
+	_check(int(best["steps"]) >= 1, "лучший заряд найден: %d шагов" % int(best["steps"]))
+	_check(float(best["per_round"]) > 0.0, "лучший заряд даёт урон")
+	_check(int(DerivedStats.best_magic_charge(0.0, 14.0)["steps"]) == 0, "без магии заряда нет")
+
+	# Перегруз
+	var overloaded := base.duplicate()
+	overloaded["strength"] = int(DerivedStats.overload_limit(base)) + 10
+	_check(DerivedStats.overload_self_damage(base) == 0.0, "в норме самоурона нет")
+	_check(DerivedStats.overload_self_damage(overloaded) > 0.0, "перегруз ранит: %.1f за раунд" % DerivedStats.overload_self_damage(overloaded))
+	_check(is_equal_approx(DerivedStats.overload_limit(base), 70.0), "предел это тело * 5")
+
+	# Подъём и мусор на входе
+	_check(is_equal_approx(DerivedStats.carry_kg_per_hand(base), float(base["strength"])), "одна сила это один килограмм на руку")
 	var junk := DerivedStats.normalized({"strength": -7, "body": "abc", "magic": 3.9})
 	_check(int(junk["strength"]) == 0, "отрицательная сила приводится к нулю")
 	_check(int(junk["body"]) == 0, "мусор в теле приводится к нулю")
 	_check(int(junk["magic"]) == 3, "дробная магия округляется вниз")
 	_check(int(junk["agility"]) == 0, "отсутствующая ловкость это ноль")
 
-	# урон после сопротивления
-	var after := DerivedStats.damage_after_resistance(100.0, "physical", rock)
-	_check(after < 100.0, "сопротивление срезает урон, дошло %.1f" % after)
-	_check(DerivedStats.damage_after_resistance(-5.0, "physical", base) == 0.0, "отрицательный урон это ноль")
-	_check(is_equal_approx(DerivedStats.damage_after_resistance(10.0, "unknown", base), 10.0), "неизвестный вид урона не режется")
-	_check(DerivedStats.damage_after_resistance(100.0, "poison", tougher) < 100.0, "яд тоже режется телом")
-
-	# сводка для панели
 	var all := DerivedStats.derived(base)
-	_check(all.has("max_hp") and all.has("dodge_chance") and all.has("resist_poison"), "сводка содержит все поля")
+	_check(all.has("max_hp") and all.has("magic_ceiling") and all.has("overload_self"), "сводка содержит все поля")
 	_check(is_equal_approx(float(all["max_hp"]), DerivedStats.max_hp(base)), "сводка не врёт про здоровье")
-	_check(DerivedStats.ATTRIBUTE_KEYS.size() == 4, "характеристик ровно четыре")
-	for key in DerivedStats.ATTRIBUTE_KEYS:
-		_check(DerivedStats.ATTRIBUTE_NAMES.has(key), "у характеристики %s есть русское имя" % key)
-	for kind in DerivedStats.DAMAGE_KINDS:
-		_check(DerivedStats.resistance(kind, base) >= 0.0, "сопротивление %s не отрицательное" % kind)
-	_check(DerivedStats.resistance("unknown", base) == 0.0, "неизвестный вид урона даёт нулевое сопротивление")
+	_check(is_equal_approx(float(all["speed_kmh"]), float(base["agility"])), "сводка не врёт про скорость")
 
 func _test_feature_flags() -> void:
 	var defaults := {"harvest": true, "stats": true}

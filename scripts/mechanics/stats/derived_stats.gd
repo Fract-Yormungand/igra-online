@@ -1,14 +1,13 @@
 class_name DerivedStats
 extends RefCounted
 
-## Формулы характеристик. Чистая математика: на вход словарь характеристик,
-## на выход числа. Ни сцен, ни сети, ни состояния, поэтому одинаково считается
-## на сервере и на клиенте и проверяется тестом в headless-режиме.
+## Характеристики и всё, что из них считается. Правила взяты из калькулятора
+## манкинов, здесь только перенос в игру: ни сцен, ни сети, ни состояния.
 ##
-## Сила даёт физический урон и здоровье.
-## Тело даёт здоровье, запас сил и сопротивление урону.
-## Магия даёт запас сил и силу магических эффектов.
-## Ловкость даёт скорость, уклонение и частоту атак.
+## Сила: урон удара и подъём одной рукой, одно очко это один килограмм.
+## Тело: здоровье, запас сил и защита от физики и магии.
+## Магия: запас сил и сила заклинаний.
+## Ловкость: скорость в км/ч и число действий за раунд.
 
 const ATTRIBUTE_KEYS := ["strength", "body", "magic", "agility"]
 const ATTRIBUTE_NAMES := {
@@ -18,49 +17,29 @@ const ATTRIBUTE_NAMES := {
 	"agility": "Ловкость",
 }
 
-const DAMAGE_PHYSICAL := "physical"
-const DAMAGE_MAGIC := "magic"
-const DAMAGE_POISON := "poison"
-const DAMAGE_KINDS := ["physical", "magic", "poison"]
-const DAMAGE_NAMES := {
-	"physical": "физика",
-	"magic": "магия",
-	"poison": "яд",
-}
+## Коэффициенты калькулятора. Меняются здесь и только здесь.
+## HP и MP = (тело + стат) * HP_MULT.
+const HP_MULT := 3.0
+## Одно действие за каждые столько ловкости.
+const ACTION_AGILITY := 10.0
+## Стат выше тела * LIMIT_MULT ранит носителя.
+const LIMIT_MULT := 5.0
+## Доля излишка, которая возвращается самоуроном за раунд.
+const SELF_MULT := 0.2
+## Затухание накопления магии.
+const MAGIC_DECAY := 0.8
+## Дальше этого накопление не считаем: выгода давно кончилась.
+const MAGIC_MAX_STEPS := 15
+const KMH_TO_MPS := 1.0 / 3.6
 
-## Здоровье: сила и тело. Запас сил: тело и магия.
-const HP_BASE := 50.0
-const HP_PER_STRENGTH := 10.0
-const HP_PER_BODY := 14.0
-const MP_BASE := 20.0
-const MP_PER_BODY := 8.0
-const MP_PER_MAGIC := 12.0
-
-const PHYSICAL_POWER_PER_STRENGTH := 0.06
-const MAGIC_POWER_PER_MAGIC := 0.08
-
-const SPEED_PER_AGILITY := 0.03
-const SPEED_BONUS_MAX := 0.35
-const DODGE_PER_AGILITY := 0.01
-const DODGE_MAX := 0.35
-const ATTACK_SPEED_PER_AGILITY := 0.04
-const ATTACK_SPEED_MAX := 0.60
-
-const PHYSICAL_RESIST_PER_BODY := 0.020
-const MAGIC_RESIST_PER_BODY := 0.015
-const MAGIC_RESIST_PER_MAGIC := 0.010
-const POISON_RESIST_PER_BODY := 0.025
-const RESIST_MAX := 0.60
-
-## С чего начинает новый игрок. Пятёрки держим не везде: так характеристики
-## заметно разные, и на панели видно, что цифры считаются.
-const START_ATTRIBUTES := {"strength": 4, "body": 4, "magic": 2, "agility": 3}
+## Стартовые характеристики. Ловкость подобрана под привычные 19 км/ч,
+## тело и сила выше магии: первый персонаж ближе к добытчику, чем к магу.
+const START_ATTRIBUTES := {"strength": 12, "body": 14, "magic": 10, "agility": 19}
 
 static func start_attributes() -> Dictionary:
 	return START_ATTRIBUTES.duplicate()
 
-## Мусор и отрицательные числа приводим к нулю: характеристики приходят
-## из сети, доверять им нельзя.
+## Характеристики приходят из сети, поэтому мусор и минусы приводим к нулю.
 static func normalized(attributes: Dictionary) -> Dictionary:
 	var result := {}
 	for key in ATTRIBUTE_KEYS:
@@ -69,67 +48,138 @@ static func normalized(attributes: Dictionary) -> Dictionary:
 
 static func max_hp(attributes: Dictionary) -> float:
 	var a := normalized(attributes)
-	return HP_BASE + HP_PER_STRENGTH * float(a["strength"]) + HP_PER_BODY * float(a["body"])
+	return (float(a["body"]) + float(a["strength"])) * HP_MULT
 
 static func max_mp(attributes: Dictionary) -> float:
 	var a := normalized(attributes)
-	return MP_BASE + MP_PER_BODY * float(a["body"]) + MP_PER_MAGIC * float(a["magic"])
+	return (float(a["body"]) + float(a["magic"])) * HP_MULT
 
-## Множитель физического урона. Сила бьёт сильнее.
-static func physical_power(attributes: Dictionary) -> float:
-	return 1.0 + PHYSICAL_POWER_PER_STRENGTH * float(normalized(attributes)["strength"])
+## Ловкость это километры в час, одно очко равно одному километру.
+static func speed_kmh(attributes: Dictionary) -> float:
+	return float(normalized(attributes)["agility"])
 
-## Множитель магических эффектов.
-static func magic_power(attributes: Dictionary) -> float:
-	return 1.0 + MAGIC_POWER_PER_MAGIC * float(normalized(attributes)["magic"])
+static func speed_mps(attributes: Dictionary) -> float:
+	return speed_kmh(attributes) * KMH_TO_MPS
 
-static func speed_multiplier(attributes: Dictionary) -> float:
-	var bonus := SPEED_PER_AGILITY * float(normalized(attributes)["agility"])
-	return 1.0 + minf(SPEED_BONUS_MAX, bonus)
+## Действий за раунд. Меньше одного не бывает.
+static func actions_per_round(attributes: Dictionary) -> int:
+	var agility := float(normalized(attributes)["agility"])
+	if agility <= 0.0:
+		return 1
+	return maxi(1, int(floor(agility / ACTION_AGILITY)))
 
-static func dodge_chance(attributes: Dictionary) -> float:
-	var chance := DODGE_PER_AGILITY * float(normalized(attributes)["agility"])
-	return minf(DODGE_MAX, chance)
+## Коэффициент состояния C = корень из произведения долей HP и MP.
+## Раненый и обессиленный персонаж слабее по всем статам сразу.
+static func state_coefficient(hp_share: float, mp_share: float) -> float:
+	return sqrt(clampf(hp_share, 0.0, 1.0) * clampf(mp_share, 0.0, 1.0))
 
-## Пауза между атаками. Ловкость её сокращает, ниже минимума не опускаемся.
-static func attack_interval(base_seconds: float, attributes: Dictionary) -> float:
-	var bonus := ATTACK_SPEED_PER_AGILITY * float(normalized(attributes)["agility"])
-	return base_seconds / (1.0 + minf(ATTACK_SPEED_MAX, bonus))
-
-static func resistance(kind: String, attributes: Dictionary) -> float:
+## Эффективные характеристики: базовые, умноженные на коэффициент состояния.
+static func effective(attributes: Dictionary, coefficient: float) -> Dictionary:
 	var a := normalized(attributes)
-	var body := float(a["body"])
-	var magic := float(a["magic"])
-	var value := 0.0
-	match kind:
-		DAMAGE_PHYSICAL:
-			value = PHYSICAL_RESIST_PER_BODY * body
-		DAMAGE_MAGIC:
-			value = MAGIC_RESIST_PER_BODY * body + MAGIC_RESIST_PER_MAGIC * magic
-		DAMAGE_POISON:
-			value = POISON_RESIST_PER_BODY * body
-		_:
-			return 0.0
-	return minf(RESIST_MAX, value)
+	var c := clampf(coefficient, 0.0, 1.0)
+	var result := {}
+	for key in ATTRIBUTE_KEYS:
+		result[key] = float(a[key]) * c
+	return result
 
-## Сколько урона реально дойдёт после сопротивления. Меньше нуля не бывает.
-static func damage_after_resistance(amount: float, kind: String, attributes: Dictionary) -> float:
-	if amount <= 0.0:
+## Доля урона, пробившая защиту тела: удар / (удар + тело).
+## Равные значения дают половину, двойной перевес даёт две трети.
+static func penetration(attack: float, body: float) -> float:
+	var a := maxf(0.0, attack)
+	var b := maxf(0.0, body)
+	if a <= 0.0:
 		return 0.0
-	return maxf(0.0, amount * (1.0 - resistance(kind, attributes)))
+	return a / (a + b)
+
+## Сколько урона дойдёт до цели с таким телом.
+static func damage_through_body(attack: float, body: float) -> float:
+	if attack <= 0.0:
+		return 0.0
+	return attack * penetration(attack, body)
+
+## Уклонение работает только на разницу ловкости: цель должна быть ловчее.
+static func evasion(defender_agility: float, attacker_agility: float) -> float:
+	if defender_agility <= 0.0 or defender_agility <= attacker_agility:
+		return 0.0
+	return (defender_agility - attacker_agility) / defender_agility
+
+## С какого броска d100 начинается попадание.
+static func d100_start(evasion_percent: float) -> int:
+	var e := clampf(evasion_percent, 0.0, 100.0)
+	return int(minf(100.0, maxf(2.0, floorf(e) + 1.0)))
+
+static func hit_chance(evasion_percent: float) -> float:
+	return float(101 - d100_start(evasion_percent)) / 100.0
+
+## Средний множитель урона по d100: бросок 1 это провал, 100 это двойной урон.
+static func expected_d100(evasion_percent: float) -> float:
+	var start := d100_start(evasion_percent)
+	var total := 2.0
+	for roll in range(start, 100):
+		total += float(roll) / 100.0
+	return total / 100.0
+
+## Заряд заклинания после накопления за N шагов.
+static func magic_charge(magic: float, steps: int) -> float:
+	var m := maxf(0.0, magic)
+	if m <= 0.0 or steps <= 0:
+		return 0.0
+	return m * (1.0 - pow(MAGIC_DECAY, steps)) / (1.0 - MAGIC_DECAY)
+
+## Потолок накопления: копить дальше бессмысленно.
+static func magic_ceiling(magic: float) -> float:
+	return maxf(0.0, magic) / (1.0 - MAGIC_DECAY)
+
+## Выгоднейшее накопление по среднему урону за раунд.
+static func best_magic_charge(magic: float, target_body: float) -> Dictionary:
+	var best := {"steps": 0, "charge": 0.0, "per_hit": 0.0, "per_round": 0.0}
+	if magic <= 0.0:
+		return best
+	for steps in range(1, MAGIC_MAX_STEPS + 1):
+		var charge := magic_charge(magic, steps)
+		var per_hit := damage_through_body(charge, target_body)
+		var per_round := per_hit / float(steps)
+		if per_round > float(best["per_round"]):
+			best = {
+				"steps": steps,
+				"charge": charge,
+				"per_hit": per_hit,
+				"per_round": per_round,
+			}
+	return best
+
+static func overload_limit(attributes: Dictionary) -> float:
+	return float(normalized(attributes)["body"]) * LIMIT_MULT
+
+## Самоурон за раунд от перегруза. Тело в перегруз не входит.
+static func overload_self_damage(attributes: Dictionary) -> float:
+	var a := normalized(attributes)
+	var limit := float(a["body"]) * LIMIT_MULT
+	var total := 0.0
+	for key in ["strength", "magic", "agility"]:
+		total += maxf(0.0, float(a[key]) - limit) * SELF_MULT
+	return total
+
+## Сколько килограммов поднимает одна рука.
+static func carry_kg_per_hand(attributes: Dictionary) -> float:
+	return float(normalized(attributes)["strength"])
 
 ## Всё сразу, для панели статуса и тестов.
 static func derived(attributes: Dictionary) -> Dictionary:
 	var a := normalized(attributes)
+	var body := float(a["body"])
+	var strength := float(a["strength"])
 	return {
 		"max_hp": max_hp(a),
 		"max_mp": max_mp(a),
-		"physical_power": physical_power(a),
-		"magic_power": magic_power(a),
-		"speed_multiplier": speed_multiplier(a),
-		"dodge_chance": dodge_chance(a),
-		"attack_interval": attack_interval(1.0, a),
-		"resist_physical": resistance(DAMAGE_PHYSICAL, a),
-		"resist_magic": resistance(DAMAGE_MAGIC, a),
-		"resist_poison": resistance(DAMAGE_POISON, a),
+		"speed_kmh": speed_kmh(a),
+		"speed_mps": speed_mps(a),
+		"actions": actions_per_round(a),
+		"penetration_vs_self": penetration(strength, body),
+		"reference_damage": damage_through_body(strength, body),
+		"carry_kg": carry_kg_per_hand(a),
+		"magic_ceiling": magic_ceiling(float(a["magic"])),
+		"overload_limit": overload_limit(a),
+		"overload_self": overload_self_damage(a),
+		"expected_d100": expected_d100(0.0),
 	}

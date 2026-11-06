@@ -17,11 +17,6 @@ const REACH := 4.2
 const HARVEST_COOLDOWN := 0.35
 const SEND_INTERVAL := 1.0 / 15.0
 const REMOTE_LERP_SPEED := 12.0
-## Бег: множитель скорости и цена в запасе сил за секунду.
-const SPRINT_MULTIPLIER := 1.45
-const SPRINT_MANA_PER_SECOND := 9.0
-## Списывать запас сил мелкими порциями: каждый кадр гонять RPC незачем.
-const MANA_REQUEST_STEP := 6.0
 
 var peer_id := 0
 var display_name := ""
@@ -43,7 +38,6 @@ var _target: ResourceNode = null
 var _target_vehicle: Car = null
 var _vehicle: Car = null
 var _shape: CollisionShape3D = null
-var _mana_debt := 0.0
 var _revive_requested := false
 
 func setup(id: int, nick: String, local: bool, spawn_position: Vector3, yaw: float) -> void:
@@ -176,7 +170,7 @@ func _physics_process(delta: float) -> void:
 
 	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction := (transform.basis * Vector3(input_dir.x, 0.0, input_dir.y))
-	var move_speed := _current_speed(input_dir, delta)
+	var move_speed := _move_speed()
 	if direction.length() > 0.01:
 		direction = direction.normalized()
 		var accel := ACCELERATION if is_on_floor() else ACCELERATION * AIR_CONTROL
@@ -230,28 +224,14 @@ func _find_target_vehicle() -> Car:
 		best_distance = distance
 	return best
 
-## Скорость с учётом ловкости и бега. Бег тратит запас сил: клиент просит
-## списание у сервера порциями, поэтому рывок не длится дольше, чем позволяет
-## присланный запас. Механики характеристик может не быть, тогда всё как раньше.
-func _current_speed(input_dir: Vector2, delta: float) -> float:
+## Скорость берётся из ловкости: одно очко это один километр в час, как в
+## калькуляторе. Раненый и обессиленный идёт медленнее, потому что ловкость
+## умножается на коэффициент состояния. Нет механики, работает запасная скорость.
+func _move_speed() -> float:
 	var stats := _stats()
 	if stats == null:
 		return SPEED
-	var speed := SPEED * float(stats.speed_multiplier(peer_id))
-	if not _sprinting(input_dir, stats):
-		return speed
-	_mana_debt += SPRINT_MANA_PER_SECOND * delta
-	if _mana_debt >= MANA_REQUEST_STEP:
-		stats.request_mana(_mana_debt)
-		_mana_debt = 0.0
-	return speed * SPRINT_MULTIPLIER
-
-func _sprinting(input_dir: Vector2, stats: Node) -> bool:
-	if input_dir.length() < 0.1:
-		return false
-	if not Input.is_action_pressed("sprint"):
-		return false
-	return float(stats.mp(peer_id)) >= MANA_REQUEST_STEP
+	return float(stats.speed_mps(peer_id))
 
 func _stats() -> Node:
 	return Features.mechanic("stats")

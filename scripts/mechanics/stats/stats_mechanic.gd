@@ -1,13 +1,13 @@
 extends Mechanic
 
-## Механика характеристик: сила, тело, магия, ловкость плюс здоровье и запас
-## сил. Считает только сервер, клиент показывает и просит.
+## Механика характеристик: сила, тело, магия, ловкость, здоровье и запас сил.
+## Считает только сервер, клиент показывает и просит. Формулы живут в
+## DerivedStats, здесь состояние и сеть.
 ##
 ## Внешний контракт для других механик:
 ##   var stats = Features.mechanic("stats")
-##   if stats != null: stats.damage(peer_id, 20.0, DerivedStats.DAMAGE_PHYSICAL)
-## Механики мобов и крафта не обязаны проверять, есть ли статистика: сервер
-## сам решит, чему верить. Без этой механики урон просто некуда писать.
+##   if stats != null: stats.damage(peer_id, 12.0)
+## Нет механики, урон просто некуда писать, остальной мир живёт.
 
 signal stats_changed(peer_id: int)
 
@@ -30,7 +30,8 @@ func start() -> void:
 	if is_server():
 		_sync_all()
 		return
-	_request_full.rpc_id(1)
+	if not Net.is_offline():
+		_request_full.rpc_id(1)
 	Net.connection_ready.connect(_request_when_ready)
 
 func _process(delta: float) -> void:
@@ -40,14 +41,20 @@ func _process(delta: float) -> void:
 	if _regen_left > 0.0:
 		return
 	_regen_left = REGEN_INTERVAL
-	_regen_tick()
+	_tick()
 
-func _regen_tick() -> void:
+## Раз в секунду: восстановление и самоурон от перегруза.
+func _tick() -> void:
 	for key in _attributes.keys():
 		var peer_id := int(key)
 		if bool(_downed.get(peer_id, false)):
 			continue
 		var attrs: Dictionary = _attributes[peer_id]
+		var overload := DerivedStats.overload_self_damage(attrs)
+		if overload > 0.0:
+			_apply(peer_id, overload)
+			if bool(_downed.get(peer_id, false)):
+				continue
 		var hp_now: float = float(_hp.get(peer_id, 0.0))
 		var mp_now: float = float(_mp.get(peer_id, 0.0))
 		var hp_new: float = minf(DerivedStats.max_hp(attrs), hp_now + HP_REGEN)
@@ -62,9 +69,6 @@ func _regen_tick() -> void:
 
 func attributes(peer_id: int) -> Dictionary:
 	return DerivedStats.normalized(_attributes.get(peer_id, DerivedStats.start_attributes()))
-
-func derived(peer_id: int) -> Dictionary:
-	return DerivedStats.derived(attributes(peer_id))
 
 func max_hp(peer_id: int) -> float:
 	return DerivedStats.max_hp(attributes(peer_id))
@@ -81,34 +85,50 @@ func mp(peer_id: int) -> float:
 func is_downed(peer_id: int) -> bool:
 	return bool(_downed.get(peer_id, false))
 
-func speed_multiplier(peer_id: int) -> float:
-	return DerivedStats.speed_multiplier(attributes(peer_id))
+## Коэффициент состояния: корень из произведения долей здоровья и запаса сил.
+func state_coefficient(peer_id: int) -> float:
+	var hp_share: float = hp(peer_id) / maxf(1.0, max_hp(peer_id))
+	var mp_share: float = mp(peer_id) / maxf(1.0, max_mp(peer_id))
+	return DerivedStats.state_coefficient(hp_share, mp_share)
 
-func dodge_chance(peer_id: int) -> float:
-	return DerivedStats.dodge_chance(attributes(peer_id))
+## Характеристики с учётом состояния: раненый слабее по всем статам сразу.
+func effective_attributes(peer_id: int) -> Dictionary:
+	return DerivedStats.effective(attributes(peer_id), state_coefficient(peer_id))
 
-func physical_power(peer_id: int) -> float:
-	return DerivedStats.physical_power(attributes(peer_id))
+func speed_mps(peer_id: int) -> float:
+	return DerivedStats.speed_mps(effective_attributes(peer_id))
+
+func actions_per_round(peer_id: int) -> int:
+	return DerivedStats.actions_per_round(effective_attributes(peer_id))
+
+## Сводка для панели: формулы плюс текущее состояние.
+func derived(peer_id: int) -> Dictionary:
+	var base := attributes(peer_id)
+	var result := DerivedStats.derived(base)
+	var eff := effective_attributes(peer_id)
+	result["coefficient"] = state_coefficient(peer_id)
+	result["effective"] = eff
+	result["reference_damage"] = DerivedStats.damage_through_body(
+		float(eff["strength"]), float(eff["body"])
+	)
+	result["magic_best"] = DerivedStats.best_magic_charge(
+		float(eff["magic"]), float(base["body"])
+	)
+	return result
 
 # --- изменение, только сервер ----------------------------------------------
 
-## Наносит урон и возвращает, сколько дошло после сопротивления.
-## Урон кладёт игрока, но не выключает его: клиент сам уводит тело в лагерь
-## и просит подъём. Так позиция остаётся клиентской, как и у всей игры.
-func damage(peer_id: int, amount: float, kind: String = DerivedStats.DAMAGE_PHYSICAL) -> float:
-	if not is_server() or amount <= 0.0:
+## Урон. attack это сила удара (или заряд заклинания), тело цели режет его
+## по формуле удар / (удар + тело). Возвращает, сколько дошло.
+func damage(peer_id: int, attack: float, kind: String = "physical") -> float:
+	if not is_server() or attack <= 0.0:
 		return 0.0
 	_ensure(peer_id)
 	if bool(_downed.get(peer_id, false)):
 		return 0.0
-	var dealt := DerivedStats.damage_after_resistance(amount, kind, _attributes[peer_id])
-	var left := maxf(0.0, float(_hp.get(peer_id, 0.0)) - dealt)
-	_hp[peer_id] = left
-	if left <= 0.0:
-		_downed[peer_id] = true
-		Game.notify_peer(peer_id, "Тебя свалили. Возвращаешься в лагерь.")
-	_push(peer_id)
-	return dealt
+	var body := float(effective_attributes(peer_id)["body"])
+	var dealt := DerivedStats.damage_through_body(attack, body)
+	return _apply(peer_id, dealt, kind)
 
 func heal(peer_id: int, amount: float) -> void:
 	if not is_server() or amount <= 0.0:
@@ -127,7 +147,7 @@ func set_attributes(peer_id: int, new_attributes: Dictionary) -> void:
 	_mp[peer_id] = minf(float(_mp.get(peer_id, 0.0)), DerivedStats.max_mp(_attributes[peer_id]))
 	_push(peer_id)
 
-## Клиент просит списать запас сил (бег). Сервер решает сам.
+## Клиент просит списать запас сил (заклинания). Сервер решает сам.
 func request_mana(amount: float) -> void:
 	if amount <= 0.0:
 		return
@@ -154,6 +174,20 @@ func _spend_mana(peer_id: int, amount: float) -> bool:
 	_mp[peer_id] = left - amount
 	_push(peer_id)
 	return true
+
+func _apply(peer_id: int, dealt: float, kind: String = "physical") -> float:
+	if dealt <= 0.0:
+		return 0.0
+	_ensure(peer_id)
+	var left := maxf(0.0, float(_hp.get(peer_id, 0.0)) - dealt)
+	_hp[peer_id] = left
+	if left <= 0.0:
+		_downed[peer_id] = true
+		Game.notify_peer(peer_id, "Тебя свалили. Возвращаешься в лагерь.")
+	_push(peer_id)
+	if kind != "self":
+		print("[STATS] #%d получил %.1f урона (%s), осталось %.1f" % [peer_id, dealt, kind, left])
+	return dealt
 
 func _revive_on_server(peer_id: int) -> void:
 	_ensure(peer_id)
@@ -244,8 +278,7 @@ func _request_full() -> void:
 func _request_mana(amount: float) -> void:
 	if not is_server():
 		return
-	var sender := multiplayer.get_remote_sender_id()
-	_spend_mana(sender, clampf(amount, 0.0, MAX_MANA_REQUEST))
+	_spend_mana(multiplayer.get_remote_sender_id(), clampf(amount, 0.0, MAX_MANA_REQUEST))
 
 @rpc("any_peer", "call_remote", "reliable")
 func _request_revive() -> void:
