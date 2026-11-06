@@ -1,0 +1,21 @@
+# Godot
+.godot/
+/android/
+*.translation
+
+# Сборки и экспорт
+build/
+export/
+*.exe
+*.pck
+*.zip
+
+# Временные файлы прогонов и снимки экрана
+tools/*.png
+tools/*.log
+*.log
+
+# Окружение и редакторы
+.env
+.vscode/
+.idea/

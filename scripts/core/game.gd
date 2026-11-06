@@ -1,0 +1,270 @@
+extends Node
+
+## Авторитетное состояние мира: источники ресурсов, инвентари, что в руках.
+## Сервер считает и рассылает, клиенты только показывают и просят.
+## Все изменения идут через сеть, локальных правок состояния на клиенте нет.
+
+signal resources_changed()
+signal inventory_changed(peer_id: int)
+signal equipped_changed(peer_id: int)
+signal state_reset()
+signal notice(text: String)
+
+## Насколько далеко от источника может стоять игрок по мнению сервера.
+## Больше, чем дистанция взаимодействия у игрока, чтобы мелкое расхождение
+## позиций не рождало ложных отказов.
+const MAX_HARVEST_DISTANCE := 5.5
+
+var resources: Dictionary = {}
+var inventories: Dictionary = {}
+var equipped: Dictionary = {}
+var positions: Dictionary = {}
+
+var world_ready := false
+## Флаг интерфейса: открыта сумка. Нужен игроку, чтобы не забирать мышь,
+## когда кликают по панели.
+var ui_inventory_open := false
+
+func _ready() -> void:
+	Net.roster_changed.connect(_on_roster_changed)
+	Net.player_transform.connect(_on_player_transform)
+	set_process(true)
+
+func is_server() -> bool:
+	return Net.is_host
+
+static func now_seconds() -> float:
+	return float(Time.get_ticks_msec()) / 1000.0
+
+func get_inventory(peer_id: int) -> Inventory:
+	return inventories.get(peer_id, null)
+
+func get_equipped(peer_id: int) -> String:
+	return String(equipped.get(peer_id, ""))
+
+func my_inventory() -> Inventory:
+	return get_inventory(Net.my_id)
+
+# --- мир -------------------------------------------------------------------
+
+## Заполняет состояние источников по списку из генератора мира.
+func setup_world(resource_list: Array) -> void:
+	resources.clear()
+	for entry in resource_list:
+		var resource_type := String(entry.get("type", ""))
+		var state := Rules.new_state(resource_type)
+		if state.is_empty():
+			continue
+		state["position"] = entry.get("position", Vector3.ZERO)
+		resources[int(entry.get("id", -1))] = state
+	world_ready = true
+	resources_changed.emit()
+
+## Возрождение истощённых источников. Крутится только на сервере.
+func _process(_delta: float) -> void:
+	if not is_server() or not world_ready:
+		return
+	var now := now_seconds()
+	for resource_id in resources.keys():
+		var state: Dictionary = resources[resource_id]
+		if bool(state.get("alive", true)):
+			continue
+		var respawn_at := float(state.get("respawn_at", 0.0))
+		if respawn_at <= 0.0 or now < respawn_at:
+			continue
+		var fresh := Rules.new_state(String(state.get("type", "")))
+		if fresh.is_empty():
+			continue
+		fresh["position"] = state.get("position", Vector3.ZERO)
+		_sync_resource.rpc(int(resource_id), fresh)
+
+# --- состав игроков --------------------------------------------------------
+
+func _on_roster_changed(players: Dictionary) -> void:
+	if not is_server():
+		return
+	for key in players:
+		var peer_id := int(key)
+		if inventories.has(peer_id):
+			continue
+		var inv := Inventory.new(ItemDB.START_INVENTORY)
+		inventories[peer_id] = inv
+		equipped[peer_id] = _default_tool(inv)
+		_sync_inventory.rpc(peer_id, inv.to_dict())
+		_sync_equipped.rpc(peer_id, get_equipped(peer_id))
+	for key in inventories.keys():
+		if players.has(int(key)):
+			continue
+		inventories.erase(key)
+		equipped.erase(key)
+		positions.erase(key)
+
+func _default_tool(inv: Inventory) -> String:
+	for item_id in ItemDB.HOTBAR:
+		if inv.has(item_id):
+			return item_id
+	return ""
+
+func _on_player_transform(peer_id: int, position: Vector3, _yaw: float) -> void:
+	positions[peer_id] = position
+
+func note_position(peer_id: int, position: Vector3) -> void:
+	positions[peer_id] = position
+
+# --- полное состояние для нового клиента -----------------------------------
+
+## Клиент просит состояние после того, как построил мир. Если соединение ещё
+## не установлено, ждём сигнала от Net и просим тогда.
+func request_state() -> void:
+	if is_server():
+		return
+	if not is_connected_to_server():
+		Net.connection_ready.connect(_request_state_when_ready, CONNECT_ONE_SHOT)
+		return
+	_request_state.rpc_id(1)
+
+func is_connected_to_server() -> bool:
+	var peer := multiplayer.multiplayer_peer
+	if peer == null:
+		return false
+	return peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+
+func _request_state_when_ready() -> void:
+	if not is_server() and world_ready:
+		_request_state.rpc_id(1)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_state() -> void:
+	if not is_server():
+		return
+	var peer_id := multiplayer.get_remote_sender_id()
+	_receive_state.rpc_id(peer_id, resources.duplicate(true), _inventories_payload(), equipped.duplicate())
+
+func _inventories_payload() -> Dictionary:
+	var payload := {}
+	for peer_id in inventories:
+		payload[int(peer_id)] = (inventories[peer_id] as Inventory).to_dict()
+	return payload
+
+@rpc("authority", "call_remote", "reliable")
+func _receive_state(resource_states: Dictionary, inv_payload: Dictionary, equipped_payload: Dictionary) -> void:
+	resources.clear()
+	for key in resource_states:
+		resources[int(key)] = resource_states[key]
+	inventories.clear()
+	for key in inv_payload:
+		inventories[int(key)] = Inventory.from_dict(inv_payload[key])
+	equipped.clear()
+	for key in equipped_payload:
+		equipped[int(key)] = String(equipped_payload[key])
+	state_reset.emit()
+	resources_changed.emit()
+
+# --- добыча ----------------------------------------------------------------
+
+func request_harvest(resource_id: int) -> void:
+	if is_server():
+		_harvest_on_server(Net.my_id, resource_id)
+	else:
+		_request_harvest.rpc_id(1, resource_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_harvest(resource_id: int) -> void:
+	if not is_server():
+		return
+	_harvest_on_server(multiplayer.get_remote_sender_id(), resource_id)
+
+## Один удар. Сервер проверяет расстояние, инструмент и состояние источника.
+func _harvest_on_server(peer_id: int, resource_id: int) -> void:
+	var state: Dictionary = resources.get(resource_id, {})
+	if state.is_empty():
+		_send_notice(peer_id, "Источник не найден")
+		return
+	var tool := ItemDB.tool_tag(get_equipped(peer_id))
+	if not Rules.can_harvest(String(state.get("type", "")), tool):
+		var need := Rules.required_tool(String(state.get("type", "")))
+		_send_notice(peer_id, "Нужен инструмент: %s" % ItemDB.display_name(need))
+		return
+	if positions.has(peer_id):
+		var spot: Vector3 = state.get("position", Vector3.ZERO)
+		var dist: float = (Vector3(positions[peer_id]) - spot).length()
+		if dist > MAX_HARVEST_DISTANCE:
+			_send_notice(peer_id, "Далеко от источника")
+			return
+	var outcome := Rules.apply_hit(state, tool)
+	if not bool(outcome.get("ok", false)):
+		_send_notice(peer_id, String(outcome.get("reason", "Не получилось")))
+		return
+	var new_state: Dictionary = outcome["node_state"]
+	if not bool(new_state.get("alive", true)):
+		var respawn := float(Rules.spec(String(new_state.get("type", ""))).get("respawn_seconds", 30.0))
+		new_state["respawn_at"] = now_seconds() + respawn
+	print("[GAME] #%d добыл %s из источника #%d" % [
+		peer_id, String(outcome.get("item", "")), resource_id
+	])
+	_sync_resource.rpc(resource_id, new_state)
+	_give_item(peer_id, String(outcome.get("item", "")), int(outcome.get("count", 1)))
+
+func _give_item(peer_id: int, item_id: String, amount: int) -> void:
+	if item_id.is_empty() or amount <= 0:
+		return
+	var inv: Inventory = inventories.get(peer_id, null)
+	if inv == null:
+		return
+	if not inv.add(item_id, amount):
+		_send_notice(peer_id, "Сумка полна: %s" % ItemDB.display_name(item_id))
+		return
+	_sync_inventory.rpc(peer_id, inv.to_dict())
+
+# --- инвентарь и руки ------------------------------------------------------
+
+func request_equip(item_id: String) -> void:
+	if is_server():
+		_equip_on_server(Net.my_id, item_id)
+	else:
+		_request_equip.rpc_id(1, item_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_equip(item_id: String) -> void:
+	if not is_server():
+		return
+	_equip_on_server(multiplayer.get_remote_sender_id(), item_id)
+
+func _equip_on_server(peer_id: int, item_id: String) -> void:
+	if not ItemDB.is_tool_item(item_id):
+		return
+	var inv: Inventory = inventories.get(peer_id, null)
+	if inv == null or not inv.has(item_id):
+		return
+	if get_equipped(peer_id) == item_id:
+		return
+	_sync_equipped.rpc(peer_id, item_id)
+
+# --- синхронизация ---------------------------------------------------------
+
+@rpc("authority", "call_local", "reliable")
+func _sync_resource(resource_id: int, state: Dictionary) -> void:
+	resources[resource_id] = state
+	resources_changed.emit()
+
+@rpc("authority", "call_local", "reliable")
+func _sync_inventory(peer_id: int, data: Dictionary) -> void:
+	inventories[peer_id] = Inventory.from_dict(data)
+	inventory_changed.emit(peer_id)
+
+@rpc("authority", "call_local", "reliable")
+func _sync_equipped(peer_id: int, item_id: String) -> void:
+	equipped[peer_id] = item_id
+	equipped_changed.emit(peer_id)
+
+func _send_notice(peer_id: int, text: String) -> void:
+	# Отказы видно в логе сервера: так проще разбирать рассинхрон и жалобы.
+	print("[GAME] отказ #%d: %s" % [peer_id, text])
+	if is_server() and peer_id == Net.my_id:
+		notice.emit(text)
+		return
+	_receive_notice.rpc_id(peer_id, text)
+
+@rpc("authority", "call_remote", "reliable")
+func _receive_notice(text: String) -> void:
+	notice.emit(text)
