@@ -13,6 +13,7 @@ const DEFAULTS := {
 	"stats": true,
 	"crafting": true,
 	"mobs": true,
+	"audio": true,
 }
 
 ## Итоговые флаги: ключи только из defaults, значения перекрываются overrides.

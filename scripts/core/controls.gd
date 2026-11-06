@@ -22,6 +22,7 @@ const ACTIONS := {
 	"toggle_stats": [KEY_C],
 	"sprint": [KEY_SHIFT],
 	"toggle_walk": [KEY_ALT],
+	"car_music": [KEY_Q],
 }
 
 ## Мышиные действия. Удар идёт левой кнопкой, когда курсор уже захвачен.

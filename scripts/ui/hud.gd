@@ -113,7 +113,7 @@ func _build() -> void:
 	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center_box.add_child(_clock)
 
-	_hint = _make_label("Tab — сумка и крафт    C — статус    E — добыча    ЛКМ — удар    Shift — бег    Alt — шаг    1/2/3 — топор, кирка, копьё    Esc — меню", 14, Color(0.86, 0.90, 0.94))
+	_hint = _make_label("Tab — сумка и крафт    C — статус    E — добыча    ЛКМ — удар    Shift — бег    Alt — шаг    1/2/3 — топор, кирка, копьё    Q — музыка    Esc — меню", 14, Color(0.86, 0.90, 0.94))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(_hint)
@@ -467,7 +467,11 @@ func _prompt_text(player: Player) -> String:
 		return ""
 	var car := player.get_vehicle()
 	if car != null:
-		return "E — выйти из машины    %d км/ч    W/S газ и назад, A/D руль" % int(round(car.speed_kmh()))
+		var music := "выкл"
+		var audio := Features.mechanic("audio")
+		if audio != null and audio.has_method("music_label"):
+			music = String(audio.music_label())
+		return "E — выйти из машины    %d км/ч    W/S газ и назад, A/D руль    Q — музыка: %s" % [int(round(car.speed_kmh())), music]
 	var near := player.get_target_vehicle()
 	if near != null:
 		return "E — сесть за руль"

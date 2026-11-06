@@ -21,6 +21,7 @@ func _initialize() -> void:
 	_test_wear()
 	_test_pickups()
 	_test_levels()
+	_test_audio()
 	_test_feature_flags()
 	print("---")
 	print("Проверок: %d, провалов: %d" % [_checks, _failures])
@@ -605,3 +606,30 @@ func _test_zones() -> void:
 	_check(WorldGen.zone_at(quarry) == "Каменоломня", "у подножия горы это каменоломня")
 	_check(WorldGen.zone_at(WorldGen.SPAWN_CENTER) == "Лагерь", "точка появления это лагерь")
 	_check(WorldGen.zone_at(Vector3(20.0, 0.0, 60.0)) == "Поляна", "пустое место это поляна")
+
+## Звук машины: листание треков, тон и громкость двигателя, наличие файлов.
+## Сеть и сцены не нужны: всё это чистые правила из AudioDB.
+func _test_audio() -> void:
+	_check(AudioDB.track_count() == 2, "в реестре два трека")
+	_check(AudioDB.next_track(-1) == 0, "с выключенного листается на первый трек")
+	_check(AudioDB.next_track(0) == 1, "с первого трека на второй")
+	_check(AudioDB.next_track(1) == -1, "после последнего трека снова выключено")
+	_check(AudioDB.track_title(-1) == "выкл", "выключенное состояние подписано")
+	_check(AudioDB.track_title(0) != AudioDB.track_title(1), "у треков разные названия: %s и %s" % [AudioDB.track_title(0), AudioDB.track_title(1)])
+	_check(AudioDB.track_path(-1).is_empty(), "у выключенного трека нет пути")
+
+	_check(is_equal_approx(AudioDB.engine_pitch(0.0, 0.0), AudioDB.ENGINE_IDLE_PITCH), "стоя на месте тон холостой")
+	_check(is_equal_approx(AudioDB.engine_pitch(1.0, 0.0), AudioDB.ENGINE_MAX_PITCH), "на полной скорости тон максимальный")
+	_check(is_equal_approx(AudioDB.engine_pitch(1.0, 1.0), AudioDB.ENGINE_IDLE_PITCH), "на прогреве тон не растёт")
+	_check(AudioDB.engine_volume_db(1.0, 0.0) > AudioDB.engine_volume_db(0.0, 0.0), "на скорости двигатель громче")
+	_check(is_equal_approx(AudioDB.engine_volume_db(1.0, 1.5), AudioDB.ENGINE_IDLE_DB), "на прогреве громкость холостая")
+	_check(is_equal_approx(AudioDB.WARMUP_SECONDS, 2.0), "прогрев длится две секунды")
+	_check(is_equal_approx(AudioDB.speed_ratio(34.0, 34.0), 1.0), "максимальная скорость это единица")
+	_check(is_equal_approx(AudioDB.speed_ratio(-34.0, 34.0), 1.0), "задний ход считается по модулю")
+	_check(AudioDB.speed_ratio(0.0, 0.0) == 0.0, "нулевой максимум не делит на ноль")
+
+	_check(FileAccess.file_exists(AudioDB.engine_path()), "файл двигателя на месте")
+	for i in AudioDB.track_count():
+		_check(FileAccess.file_exists(AudioDB.track_path(i)), "файл трека %d на месте" % (i + 1))
+	_check(ResourceLoader.exists("res://scripts/mechanics/audio/audio_mechanic.gd"), "файл механики звука на месте")
+	_check(FeatureFlags.DEFAULTS.has("audio"), "звук включён по умолчанию")

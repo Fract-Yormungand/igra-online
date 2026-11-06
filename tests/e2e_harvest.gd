@@ -132,6 +132,7 @@ func _process(delta: float) -> void:
 			var state: Dictionary = Game.vehicles.get(_car_id, {})
 			_check(int(state.get("driver", 0)) == Net.my_id, "сервер посадил за руль, водитель %d" % int(state.get("driver", 0)))
 			_check(_local_player() != null and _local_player().get_vehicle() != null, "игрок видит себя в машине")
+			_check_audio_in_car()
 			_car_start = Vector3(state.get("position", Vector3.ZERO))
 			_phase = 12
 			_wait = 0.8
@@ -157,6 +158,7 @@ func _process(delta: float) -> void:
 			var left: Dictionary = Game.vehicles.get(_car_id, {})
 			_check(int(left.get("driver", 0)) == 0, "после выхода машина свободна, водитель %d" % int(left.get("driver", 0)))
 			_check(_local_player() != null and _local_player().get_vehicle() == null, "игрок больше не в машине")
+			_check_audio_after_exit()
 			_phase = 15
 			_wait = 0.2
 		15:
@@ -406,6 +408,32 @@ func _mobs_check() -> void:
 	var stats := _stats()
 	if stats != null:
 		_check(stats.hp(Net.my_id) > 0.0, "после удара и толчка игрок жив")
+
+## Звук в машине: двигатель заводится на посадке, прогревается две секунды,
+## музыка листается на Q и гаснет при выходе.
+func _check_audio_in_car() -> void:
+	var audio := Features.mechanic("audio")
+	_check(audio != null, "механика звука поднялась")
+	_check(Car.MAX_SPEED * 3.6 > 120.0, "максимум машины %.0f км/ч" % (Car.MAX_SPEED * 3.6))
+	if audio == null:
+		return
+	_check(bool(audio.engine_running()), "сел в машину, двигатель завёлся")
+	_check(bool(audio.engine_audible()), "звук двигателя реально играет")
+	_check(audio.warmup_left() > 0.0, "сначала идёт прогрев: %.2f с" % audio.warmup_left())
+	_check(audio.music_label() == "выкл", "при посадке музыка выключена")
+	_check(audio.cycle_music() == 0, "первое нажатие Q включает трек 1")
+	_check(bool(audio.music_state().get("playing", false)), "трек 1 реально играет")
+	_check(audio.music_label() == AudioDB.track_title(0), "подпись трека совпала: %s" % audio.music_label())
+	_check(audio.cycle_music() == 1, "второе нажатие Q включает трек 2")
+	_check(audio.cycle_music() == -1, "третье нажатие Q выключает музыку")
+	_check(audio.music_label() == "выкл", "после третьего нажатия тишина")
+
+func _check_audio_after_exit() -> void:
+	var audio := Features.mechanic("audio")
+	if audio == null:
+		return
+	_check(not bool(audio.engine_running()), "вышел из машины, двигатель замолк")
+	_check(audio.music_label() == "выкл", "вне машины музыки нет")
 
 ## Крафт: телепорт к камню, две добычи киркой, заказ копья.
 func _craft_setup() -> void:

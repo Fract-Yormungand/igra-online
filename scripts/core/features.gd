@@ -18,6 +18,7 @@ const MECHANICS := [
 	{"id": "stats", "path": "res://scripts/mechanics/stats/stats_mechanic.gd"},
 	{"id": "crafting", "path": "res://scripts/mechanics/crafting/crafting_mechanic.gd"},
 	{"id": "mobs", "path": "res://scripts/mechanics/mobs/mobs_mechanic.gd"},
+	{"id": "audio", "path": "res://scripts/mechanics/audio/audio_mechanic.gd"},
 ]
 
 var flags: Dictionary = {}

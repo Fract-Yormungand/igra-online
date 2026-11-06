@@ -288,6 +288,16 @@ func _stats() -> Node:
 func _can_walk() -> bool:
 	return DerivedStats.walk_available(_top_speed_kmh())
 
+## Музыка живёт только в машине: клавиша листает треки, вне машины молчит.
+## Сам звук держит механика audio, персонаж её только просит.
+func _cycle_car_music() -> void:
+	if _vehicle == null:
+		return
+	var audio := Features.mechanic("audio")
+	if audio == null or not audio.has_method("cycle_music"):
+		return
+	audio.cycle_music()
+
 func _toggle_walk() -> void:
 	if not _can_walk():
 		_walking = false
@@ -386,6 +396,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			Game.request_vehicle_enter(_target_vehicle.car_id)
 			return
 		_try_harvest()
+		return
+	if event.is_action_pressed("car_music"):
+		_cycle_car_music()
 		return
 	if event.is_action_pressed("slot_1"):
 		Game.request_tool("axe")

@@ -5,14 +5,19 @@ extends CharacterBody3D
 ## движение у себя. Остальные получают позицию по сети и плавно догоняют её.
 ## Так же сделаны персонажи, поэтому правила одни на всю игру.
 
-const MAX_SPEED := 17.0
-const REVERSE_SPEED := 7.0
-## Метры в секунду за секунду. Машина выходит на максимум примерно за две
-## секунды: резко, но не телепортом.
+## Максимум 34 м/с это около 122 км/ч, вдвое быстрее прежнего.
+const MAX_SPEED := 34.0
+const REVERSE_SPEED := 12.0
+## Метры в секунду за секунду. Разгон оставлен прежним, поэтому до максимума
+## машина идёт примерно четыре секунды и скорость чувствуется, а не прыгает
+## сразу до предела.
 const ACCELERATION := 8.0
-const BRAKE := 14.0
+const BRAKE := 20.0
 const ROLL_DRAG := 3.5
 const STEER_RATE := 1.9
+## На полной скорости руль крутит слабее: тот же поворот на вдвое большей
+## скорости выносит машину с дороги.
+const STEER_HIGH_SPEED_SCALE := 0.55
 const GRAVITY := 22.0
 const SEND_INTERVAL := 1.0 / 15.0
 const REMOTE_LERP_SPEED := 10.0
@@ -52,6 +57,10 @@ func seat_position() -> Vector3:
 
 func speed_kmh() -> float:
 	return absf(_speed) * 3.6
+
+## Скорость в метрах в секунду: по ней считает тон и громкость двигателя.
+func speed_mps() -> float:
+	return absf(_speed)
 
 func is_free() -> bool:
 	return driver_id == 0
@@ -159,9 +168,10 @@ func _physics_process(delta: float) -> void:
 
 	# На месте руль не крутит: машина поворачивает только в движении.
 	var grip := clampf(absf(_speed) / STEER_FULL_SPEED, 0.0, 1.0)
+	var steer_scale := lerpf(1.0, STEER_HIGH_SPEED_SCALE, clampf(absf(_speed) / MAX_SPEED, 0.0, 1.0))
 	if absf(_speed) > 0.2:
 		var direction := signf(_speed)
-		rotation.y += steer * STEER_RATE * grip * direction * delta
+		rotation.y += steer * STEER_RATE * grip * steer_scale * direction * delta
 
 	velocity.x = -transform.basis.z.x * _speed
 	velocity.z = -transform.basis.z.z * _speed
